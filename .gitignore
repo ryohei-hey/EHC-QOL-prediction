@@ -1,0 +1,11 @@
+# Participant data and derived objects must never be committed
+data/
+output/
+protocol/
+*.csv
+*.xlsx
+*.xls
+*.rds
+.Rhistory
+.RData
+.Rproj.user/
