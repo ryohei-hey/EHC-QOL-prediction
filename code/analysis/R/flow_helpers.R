@@ -116,11 +116,12 @@ wrap_reason <- function(x, width) {
 # wrap_width : 横の箱の理由を何文字で折り返すか
 # n_style    : 人数の書式。"n = %s"(既定)、"n=%s"(NEJM など詰める投稿先)
 # gap        : 箱と箱の間隔(文字の高さを 1 とした倍数)
-build_flow <- function(flow, fontsize = 8, wrap_width = 45, n_style = "n = %s", gap = 1.5,
+# fontfamily : フォント。EMF に書き出すときは "Arial" と名前で指定する ("sans" のままだと Word が別の書体に置き換える)
+build_flow <- function(flow, fontsize = 8, wrap_width = 45, n_style = "n = %s", gap = 1.5, fontfamily = "sans",
                        lwd = 0.75) {
   check_flow(flow)
   set_consort_defaults(
-    txt_gp       = gpar(fontsize = fontsize, fontfamily = "sans", col = "black"),
+    txt_gp       = gpar(fontsize = fontsize, fontfamily = fontfamily, col = "black"),
     box_gp       = gpar(fill = "white", col = "black", lwd = lwd),
     arrow_gp     = gpar(col = "black", fill = "black", lwd = lwd),
     arrow_length = 0.05,
@@ -147,7 +148,7 @@ build_flow <- function(flow, fontsize = 8, wrap_width = 45, n_style = "n = %s", 
   # 縦の箱の幅を、いちばん広い箱にそろえる(consort は文字の長さで幅が変わるため)
   pdf(NULL)
   main_w <- max(vapply(main_txt, function(t) {
-    convertWidth(grobWidth(textGrob(t, gp = gpar(fontsize = fontsize, fontfamily = "sans"))), "mm", TRUE)
+    convertWidth(grobWidth(textGrob(t, gp = gpar(fontsize = fontsize, fontfamily = fontfamily))), "mm", TRUE)
   }, 0)) + 2 * 3 * 1.4   # 左右の余白
   dev.off()
   min_w <- unit(main_w, "mm")

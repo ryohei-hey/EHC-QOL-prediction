@@ -47,7 +47,10 @@ eval_sets <- list(
   list(set = "V_FY2023", data = filter(V, val_fy == "FY2023"), time = "18m"),
   list(set = "S4_FY2022", data = filter(S4, val_fy == "FY2022"), time = "18m"),
   list(set = "S4_FY2023", data = filter(S4, val_fy == "FY2023"), time = "18m"),
-  list(set = "V_6m",     data = as_sets$V6m,                 time = "6m")
+  list(set = "V_6m",     data = as_sets$V6m,                 time = "6m"),
+  # 補足評価: 健診前の HRQOL が低くなかった人 (PCS 複合は PCS >= 40、MCS 複合は MCS >= 40)。
+  # Table 2 の同じ集団での抽出に対応する判別能 (2026-10-11 追加。アウトカムごとに下で絞る)
+  list(set = "V_pre40",  data = V,                           time = "18m", pre40 = TRUE)
 )
 
 # ROC 曲線の座標 (偽陽性率・感度) と、その集団での AUC
@@ -62,6 +65,7 @@ for (es in eval_sets) {
   for (dom in c("pcs", "mcs")) {
     yv <- paste0("y_", dom, "_", es$time)
     d  <- es$data |> filter(!is.na(.data[[yv]]))     # 結果が確定した人で評価する
+    if (isTRUE(es$pre40)) d <- d |> filter(.data[[paste0(dom, "_pre")]] >= LOW_QOL_CUTOFF)
     y  <- d[[yv]]
     lps <- map(set_names(names(MODELS)), \(m) lp_of(d, yv, m))
 

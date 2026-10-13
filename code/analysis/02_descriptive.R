@@ -165,7 +165,7 @@ survey_counts <- function(yr) {
 }
 not_eligible <- function(fy) list(label = "Did not meet inclusion criteria",
                                   reasons = setNames(c("flag_sf8", "flag_nochk"),
-                                                     c("SF-8 not scored", sprintf("Did not attend the %s checkup", fy))))
+                                                     c("No SF-8 score", sprintf("Did not attend the %s checkup", fy))))
 excl_base <- c("Questionnaire items missing" = "flag_items",
                "Checkup measurements missing" = "flag_chk",
                "Care level ≥3 at checkup" = "flag_ltc3")

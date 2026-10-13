@@ -39,10 +39,21 @@ STYLE <- list(
   auc_refs    = c(0.7, 0.8),          # 参照線 (記述の目安。判定には使わない)
   calib_limit = 0.8,                  # 較正曲線の軸の上限 (0–80%)
   base_size   = 9,                    # 文字の大きさ (pt)
-  font        = "sans",
+  font        = "Arial",              # 名前で指定する ("sans" は EMF にそのまま書かれ、Word が別の書体に置き換える)
   width_2col  = 174,                  # 図の幅 (mm)。2 段幅
-  dpi         = 600
+  dpi         = 600,
+  # eFigure は編集部が描き直さず、そのまま公開される。JAMA の規定 (Online-Only Figures) は
+  # 「図の中の文字は Arial 10 pt、グラフはベクター形式で Word に挿入」。
+  # Supplement には実寸で貼る。pandoc は reference_supplement.docx (用紙サイズの指定がない) の本文幅を
+  # 5.83 インチ (148 mm) とみなし、それより広い図を縮める (縮むと文字が 10 pt 未満になる) ので、148 mm で作る
+  efig_width  = 148,                  # eFigure の幅 (mm)
+  efig_text   = 10                    # eFigure の文字の大きさ (pt)。軸の目盛・凡例・パネル名もすべてこの大きさ
 )
+# フロー図の大きさは pdf(NULL) で文字の幅を測って決める (R/flow_helpers.R)。pdf() は "Arial" を知らないので、
+# 字幅が同じ Helvetica を Arial の名前で登録しておく (登録しないと警告が大量に出る)
+if (is.null(grDevices::pdfFonts()[[STYLE$font]])) {
+  do.call(grDevices::pdfFonts, setNames(list(grDevices::pdfFonts()$Helvetica), STYLE$font))
+}
 MODEL_LABELS <- c(checkup = "Checkup-based model", questionnaire = "Questionnaire-based model",
                   direct = "HRQOL-based model", checkup_direct = "Combined model")
 OUTCOME_LABELS <- c(pcs = "PCS composite", mcs = "MCS composite")
@@ -70,10 +81,16 @@ VAR_LABELS <- c(
   pcs_pre = "Pre-checkup SF-8 PCS, score", mcs_pre = "Pre-checkup SF-8 MCS, score"
 )
 
-theme_paper <- function() {
-  theme_bw(base_size = STYLE$base_size, base_family = STYLE$font) +
+theme_paper <- function(base_size = STYLE$base_size) {
+  theme_bw(base_size = base_size, base_family = STYLE$font) +
     theme(panel.grid.minor = element_blank(), strip.background = element_rect(fill = "grey95"),
           legend.position = "bottom", legend.title = element_blank())
+}
+# eFigure 用: theme_bw は目盛・凡例・パネル名を本文の 0.8 倍にするので、すべて efig_text にそろえる
+theme_efig <- function() {
+  txt <- element_text(size = STYLE$efig_text)
+  theme_paper(STYLE$efig_text) +
+    theme(axis.text = txt, strip.text = txt, legend.text = txt, plot.title = txt)
 }
 save_fig <- function(p, name, height_mm, width_mm = STYLE$width_2col) {
   ggsave(file.path(DIR_FIGURES, paste0(name, ".png")), p, width = width_mm, height = height_mm,
@@ -81,6 +98,20 @@ save_fig <- function(p, name, height_mm, width_mm = STYLE$width_2col) {
   ggsave(file.path(DIR_FIGURES, paste0(name, ".pdf")), p, width = width_mm, height = height_mm,
          units = "mm", device = cairo_pdf)
   message("図: ", name)
+}
+# EMF (ベクター) を書き出す。Supplement (Word) にはこれを貼る。draw は描画する関数
+# 非 ASCII のパスで保存に失敗しないよう、一時ファイルに描いてからコピーする
+write_emf <- function(name, width_mm, height_mm, draw) {
+  tmp <- tempfile(name, fileext = ".emf")
+  devEMF::emf(tmp, width = width_mm / 25.4, height = height_mm / 25.4, family = "Arial", bg = "white")
+  draw(); dev.off()
+  stopifnot(file.copy(tmp, file.path(DIR_FIGURES, paste0(name, ".emf")), overwrite = TRUE))
+  unlink(tmp)
+}
+# eFigure: PNG と PDF (確認用・レポート用) に加えて EMF を書き出す
+save_efig <- function(p, name, height_mm, width_mm = STYLE$efig_width) {
+  save_fig(p, name, height_mm, width_mm)
+  write_emf(name, width_mm, height_mm, \() print(p))
 }
 save_tables <- function(tabs, name, landscape = FALSE, widths = NULL) {
   # widths (インチ) を渡すと、自動の列幅の代わりにその幅を使う (CI の折り返しを防ぎたい表で使う)
@@ -154,6 +185,25 @@ span_rows <- function(ft, i) {
 }
 ABBREV_NOTE <- "Abbreviations: AUC, area under the receiver operating characteristic curve; HRQOL, health-related quality of life; MCS, mental component summary; PCS, physical component summary; PPV, positive predictive value."
 ABBREV_NOTE_NOPPV <- "Abbreviations: AUC, area under the receiver operating characteristic curve; HRQOL, health-related quality of life; MCS, mental component summary; PCS, physical component summary."
+# 略語の定義の一覧。表ごとに、その表で使う略語だけを並べた Abbreviations 行を abbrev_note() で作る
+ABBREV_DEF <- c(
+  "γ-GTP" = "γ-glutamyltransferase", ALT = "alanine aminotransferase", AST = "aspartate aminotransferase",
+  AUC = "area under the receiver operating characteristic curve", "ΔAUC" = "difference in AUC",
+  Cr = "serum creatinine", eGFR = "estimated glomerular filtration rate", FY = "fiscal year",
+  HbA1c = "hemoglobin A1c", HDL = "high-density lipoprotein", HRQOL = "health-related quality of life",
+  LDL = "low-density lipoprotein", MCS = "mental component summary",
+  NGSP = "National Glycohemoglobin Standardization Program", PCS = "physical component summary",
+  QMCOO = "Questionnaire for Medical Checkup of Old-Old", SD = "standard deviation",
+  PPV = "positive predictive value", "SF-8" = "8-item Short-Form Health Survey")
+abbrev_note <- function(...) {
+  keys <- c(...)
+  stopifnot(all(keys %in% names(ABBREV_DEF)))
+  paste0("Abbreviations: ", paste(keys, ABBREV_DEF[keys], sep = ", ", collapse = "; "), ".")
+}
+# 検査値の略語と SI 換算 (eTable 1・eTable 3。Table 1 は summary_flextable に同じ内容がある)
+LAB_ABBREV_E1 <- abbrev_note("γ-GTP", "ALT", "AST", "Cr", "eGFR", "HbA1c", "HDL", "LDL", "NGSP", "QMCOO")
+LAB_ABBREV_E3 <- abbrev_note("γ-GTP", "ALT", "AST", "eGFR", "HbA1c", "HDL", "LDL", "MCS", "NGSP", "PCS", "QMCOO", "SD")
+SI_NOTE <- "SI conversion factors: To convert HDL and LDL cholesterol to mmol/L, multiply by 0.0259; triglycerides to mmol/L, multiply by 0.0113; AST, ALT, and γ-GTP to μkat/L, multiply by 0.0167; HbA1c to proportion of total hemoglobin, multiply by 0.01; serum creatinine to μmol/L, multiply by 88.4; eGFR to mL/s/1.73 m², multiply by 0.0167."
 # 変数の区分 (Table 1・eTable 3・eTable 2 で区分の見出し行を入れる)
 VAR_SECTION <- c(
   setNames(rep("Demographics", 2), c("age", "sex")),
@@ -231,6 +281,10 @@ summary_rows <- function(body, stat_cols) {
       .default = paste0("    ", pretty_level(label))))
   # 二値の項目で「はい」がリスクの低い回答のもの (Q3・Q9・Q13–15) も、表示は「yes」の割合にそろえている
   body <- body |> mutate(across(all_of(stat_cols), jama_stat))
+  # 整数で記録される測定値 (血圧・脂質・肝酵素など) は、行の値がすべて ".0" で終わるときは小数を付けない ("136 (127-144)")
+  int_row <- str_detect(body$var_type, "continuous") %in% TRUE &
+    pmap_lgl(body[stat_cols], \(...) all(str_detect(unlist(str_extract_all(c(...), "\\d+\\.\\d+")), "\\.0$")))
+  body <- body |> mutate(across(all_of(stat_cols), \(x) if_else(int_row, str_replace_all(x, "(\\d+)\\.0(?!\\d)", "\\1"), x)))
   add_sections(body |> select(label, all_of(stat_cols)), body$variable)
 }
 summary_flextable <- function(out) {
@@ -411,6 +465,9 @@ tbl2_out <- tbl2 |>
          direct_sens, direct_max, direct_ppv, direct_missing)
 t2_model_hdr <- list(sens = "Sensitivity, %\n(95% CI)", max = "Maximum sensitivity, %",
                      ppv = "PPV, %\n(95% CI)", missing = "Selected with\noutcome unknown, No.")
+# 列見出しへの注 (上付き a: 抽出の定義、b: 最大感度)
+T2_NOTE_A <- "Participants in the top 10%, 20%, or 30% of predicted risk among all eligible participants in the population, regardless of whether the outcome was known; ties at the threshold were all included."
+T2_NOTE_B <- "Sensitivity if every selected participant with a known outcome had the outcome (selected participants with known outcomes divided by participants with the outcome, capped at 100%); it differs by model because the selected participants differ."
 ft2 <- flextable(tbl2_out) |>
   set_header_labels(values = c(
     list(Top = "Selected as high risk"),
@@ -420,15 +477,20 @@ ft2 <- flextable(tbl2_out) |>
   merge_v(j = c("Outcome", "Population")) |> valign(j = 1:2, valign = "top", part = "body") |>
   align(j = 3:11, align = "center", part = "all") |> align(i = 1, align = "center", part = "header") |>
   hline(i = seq(3, nrow(tbl2_out) - 1, by = 3), border = thin_rule) |>
+  # JAMA の順: Abbreviations → 一般の注 → 上付き a, b (列見出しへの注)
   add_footer_lines(c(
-    "Selected as high risk: participants in the top 10%, 20%, or 30% of predicted risk among all eligible participants in the population, regardless of whether the outcome was known; ties at the threshold were all included.",
+    abbrev_note("HRQOL", "MCS", "PCS", "PPV"),
     "Sensitivity: proportion of participants with the outcome who were selected. PPV: proportion of selected participants who had the outcome. Both were estimated among participants with known outcomes; 95% CIs: bootstrap percentile (stratified by fiscal year; threshold recomputed in each sample).",
     "Outcome, %: proportion with the outcome among participants with known outcomes (the PPV expected with random selection).",
-    "Maximum sensitivity: sensitivity if every selected participant with a known outcome had the outcome (selected participants with known outcomes divided by participants with the outcome, capped at 100%); it differs by model because the selected participants differ.",
     "Pre-checkup score ≥40: PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup.",
-    "Abbreviations: CI, confidence interval; HRQOL, health-related quality of life; MCS, mental component summary; PCS, physical component summary; PPV, positive predictive value.",
-    OUTCOME_NOTE, time_note("18m")
+    OUTCOME_NOTE, time_note("18m"),
+    T2_NOTE_A,
+    T2_NOTE_B
   )) |>
+  sup_header("Top", "Selected as high risk") |>
+  sup_header("checkup_max", t2_model_hdr$max, mark = "b") |> sup_header("direct_max", t2_model_hdr$max, mark = "b") |>
+  (\(ft) { f <- ft$footer$dataset[[1]]
+           sup_footer(sup_footer(ft, match(T2_NOTE_A, f)), match(T2_NOTE_B, f), mark = "b") })() |>
   fontsize(size = 7.5, part = "all") |> font(fontname = "Arial", part = "all") |>
   padding(padding.top = 1.5, padding.bottom = 1.5, part = "all") |>
   # 対象集団ごとの 3 行のブロックが、ページをまたいで切れないようにする
@@ -521,7 +583,8 @@ ft_e1 <- flextable(etbl1 |> rename(Domain = domain, Predictor = predictor,
   # 領域の境目に細い線を引く
   hline(i = which(head(etbl1$domain, -1) != tail(etbl1$domain, -1)), border = thin_rule) |>
   add_footer_lines(c("Ref, reference category (lowest-risk response). Predictors were standardized before penalization in ridge regression.",
-                     "QMCOO wording follows the official English version (Satake & Arai 2020); the Japanese wording is that of the Ministry of Health, Labour and Welfare questionnaire (2019). Total: 39 parameters.")) |>
+                     "QMCOO wording follows the official English version (eMethods 1); the Japanese wording is that of the Ministry of Health, Labour and Welfare questionnaire. Total: 39 parameters.",
+                     LAB_ABBREV_E1, SI_NOTE)) |>
   fontsize(size = 7.5, part = "all") |> font(fontname = "Arial", part = "all")
 save_tables(list(`eTable 1. Definition of predictors` = ft_e1), "eTable1", landscape = TRUE)
 
@@ -577,6 +640,7 @@ ft_e2 <- flextable(e2_body) |>
     "Values are log-odds coefficients per unit of the predictor in original units, reported to 4 decimal places so that the model can be applied [standardized log-odds coefficient in brackets: per SD of the predictor in the development data, for continuous predictors and dummy variables alike]. The predicted risk is 1/(1 + exp(−LP)), where LP is the intercept plus the sum of coefficients multiplied by predictor values; triglycerides, AST, ALT, and γ-GTP enter as natural logarithms.",
     "Standardized coefficients indicate relative contribution to prediction and are not causal effects; contributions are shared among correlated laboratory values.",
     "The ≈18-month models are the main analysis; the ≈6-month models are exploratory.",
+    LAB_ABBREV_E3, SI_NOTE,
     OUTCOME_NOTE, time_note(c("18m", "6m"))
   )) |>
   fontsize(size = 7.5, part = "all") |> font(fontname = "Arial", part = "all")
@@ -614,12 +678,17 @@ VAL_SET_LABELS <- c(V        = "Temporal validation (FY2022 and FY2023 checkups 
                     V_FY2022 = "Temporal validation, FY2022 checkup only",
                     V_FY2023 = "Temporal validation, FY2023 checkup only",
                     V_6m     = "Temporal validation at ≈6 months (FY2023 checkup)")
+# eTable 4 の行と eTable 9 の列に、健診前の HRQOL が低くなかった人での値を足す (2026-10-11。Table 2 の同じ集団に対応)
+E3_SET_LABELS <- c(VAL_SET_LABELS, V_pre40 = "Temporal validation, pre-checkup score ≥40")
+# 開発の location-shifted CI が点推定を中心にしない理由 (eTable 4・9・10 の脚注で共通、2026-10-11)。
+# bootstrap 標本での見かけの値は、パラメータの多いモデルほど元のデータより大きく膨らむ (03 の boot_dist で確認)
+LS_CI_NOTE <- "Development 95% CIs are location-shifted bootstrap intervals (eMethods 5): the 2.5th and 97.5th percentiles of the apparent values in bootstrap samples minus the estimated optimism. Because apparent values in bootstrap samples differed systematically from those in the original data (the apparent AUC was inflated more for models with more parameters), these intervals are not centered on the optimism-corrected estimates."
 ext_rows <- perf_ext$perf |>
-  filter(set %in% names(VAL_SET_LABELS)) |>
+  filter(set %in% names(E3_SET_LABELS)) |>
   mutate(value = fmt_ci(estimate, lo, hi)) |>
   select(outcome, model, set, stat, value, n, events) |>
   pivot_wider(names_from = stat, values_from = value) |>
-  transmute(outcome, model, cohort = VAL_SET_LABELS[set],
+  transmute(outcome, model, cohort = E3_SET_LABELS[set],
             `Events/participants, No.` = sprintf("%d/%d", events, n), AUC = auc, `Calibration slope` = slope, `Calibration-in-the-large` = citl)
 e3a <- bind_rows(dev_rows, ext_rows) |>
   mutate(Outcome = paste0(OUTCOME_LABELS[DOMAIN_OF(outcome)], ", ", TIME_SHORT[TIME_OF(outcome)]),
@@ -630,6 +699,9 @@ e3a <- bind_rows(dev_rows, ext_rows) |>
   arrange(Analysis != "Main results (primary, E1–E3)", match(TIME_OF(outcome), c("18m", "6m")),
           match(DOMAIN_OF(outcome), c("pcs", "mcs")), match(model, names(MODEL_LABELS)), cohort) |>
   select(Analysis, Outcome, Model, Cohort = cohort, everything(), -outcome, -model) |>
+  # 開発だけの列 (bootstrap の詳細) は、検証の行では空欄にせず "—" (該当なし) とする
+  mutate(across(c(`AUC optimism`, `Slope in bootstrap samples`, `λ, final model`, `λ in bootstrap samples`),
+                \(x) replace_na(x, "—"))) |>
   mutate(across(everything(), \(x) fix_minus(replace_na(as.character(x), ""))))
 # 解析の区分 (主解析 / 探索的解析) は列ではなく、表全体にまたがる見出し行にする
 e3_body <- split(e3a, factor(e3a$Analysis, levels = unique(e3a$Analysis))) |>
@@ -644,6 +716,9 @@ e3_key <- paste(e3_body$Outcome, e3_body$Model)
 e3_key[e3_sec] <- NA
 e3_key <- Reduce(\(a, b) if (is.na(b)) a else b, e3_key, accumulate = TRUE)
 e3_rule <- setdiff(which(head(e3_key, -1) != tail(e3_key, -1)), c(e3_sec, e3_sec - 1))
+# 検証でイベントが 100 未満の行は慎重に解釈する印をつける (eMethods 6、2026-10-10。2026-10-13 に「参考値」から変更)
+e3_ev  <- suppressWarnings(as.integer(sub("/.*", "", e3_body$`Events/participants, No.`)))
+e3_ref <- which(e3_body$Cohort != "Development (optimism-corrected)" & !is.na(e3_ev) & e3_ev < 100)
 ft_e3 <- flextable(e3_body) |>
   set_header_labels(`Slope in bootstrap samples` = "Calibration slope in bootstrap samples",
                     `λ in bootstrap samples` = "λ in bootstrap samples") |>
@@ -656,42 +731,51 @@ ft_e3 <- flextable(e3_body) |>
   add_footer_lines(c(
     "Values in parentheses are 95% CIs unless otherwise indicated. Development values are optimism-corrected by bootstrap; temporal validation values are for the final models fitted in the development cohort.",
     "Median (2.5th to 97.5th percentile) across bootstrap samples.",
-    "Calibration slope <1 indicates predictions that are too extreme, >1 predictions that are too moderate; calibration-in-the-large >0 indicates that risk was underestimated on average.",
-    ABBREV_NOTE_NOPPV,
+    "Fewer than 100 events in validation; interpret with caution (eMethods 6).",
+    "Calibration slope <1 indicates predictions that are too extreme, >1 predictions that are too moderate; calibration-in-the-large >0 indicates that risk was underestimated on average. —, not applicable (development cohort only).",
+    LS_CI_NOTE,
+    "Pre-checkup score ≥40: participants with a PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup (the population also shown in Table 2).",
+    abbrev_note("AUC", "FY", "HRQOL", "MCS", "PCS"), "λ indicates the penalty parameter of the ridge regression.",
     OUTCOME_NOTE, time_note()
   )) |>
   sup_header("Slope in bootstrap samples", "Calibration slope in bootstrap samples") |>
   sup_header("λ in bootstrap samples", "λ in bootstrap samples") |>
-  sup_footer(2, "Median (2.5th to 97.5th percentile) across bootstrap samples.")
+  sup_footer(2, "Median (2.5th to 97.5th percentile) across bootstrap samples.") |>
+  compose(i = e3_ref, j = "Events/participants, No.", part = "body",
+          value = as_paragraph(e3_body$`Events/participants, No.`[e3_ref], as_sup("b"))) |>
+  sup_footer(3, "Fewer than 100 events in validation; interpret with caution (eMethods 6).", mark = "b")
 delta_rows <- bind_rows(
   perf_dev$delta |> transmute(outcome, contrast, cohort = "Development (optimism-corrected)",
                               value = fmt_ci(corrected, lo, hi, 3)),
-  perf_ext$delta |> filter(set %in% names(VAL_SET_LABELS)) |>
-    transmute(outcome, contrast, cohort = VAL_SET_LABELS[set], value = fmt_ci(estimate, lo, hi, 3))
+  perf_ext$delta |> filter(set %in% names(E3_SET_LABELS)) |>
+    transmute(outcome, contrast, cohort = E3_SET_LABELS[set], value = fmt_ci(estimate, lo, hi, 3))
 ) |>
   mutate(Outcome = paste0(OUTCOME_LABELS[DOMAIN_OF(outcome)], ", ", TIME_SHORT[TIME_OF(outcome)]),
          Contrast =recode(contrast, E5 = "HRQOL-based − checkup-based", E7 = "Combined − checkup-based",
                            E7_ref = "Combined − HRQOL-based (reference)", E8 = "Checkup-based − questionnaire-based")) |>
   select(Outcome, Contrast, cohort, value) |>
   pivot_wider(names_from = cohort, values_from = value) |>
-  select(Outcome, Contrast, `Development (optimism-corrected)`, all_of(unname(VAL_SET_LABELS))) |>
+  select(Outcome, Contrast, `Development (optimism-corrected)`, all_of(unname(E3_SET_LABELS))) |>
   # 該当しない組み合わせ (≈18 months の年度別と ≈6 months) は "—" と書く
   mutate(across(everything(), \(x) fix_minus(replace_na(x, "—"))))
 # 検証の列は「Temporal validation」を上の見出し行にまとめ、下の行には集合の違いだけを書く
 e4_val_sub <- c(V = "FY2022 and FY2023\ncheckups combined", V_FY2022 = "FY2022 checkup only",
-                V_FY2023 = "FY2023 checkup only", V_6m = "At ≈6 months\n(FY2023 checkup)")
-stopifnot(identical(names(e4_val_sub), names(VAL_SET_LABELS)))
+                V_FY2023 = "FY2023 checkup only", V_6m = "At ≈6 months\n(FY2023 checkup)",
+                V_pre40 = "Pre-checkup score ≥40\n(FY2022 and FY2023)")
+stopifnot(identical(names(e4_val_sub), names(E3_SET_LABELS)))
 ft_e4 <- flextable(delta_rows) |>
-  set_header_labels(values = setNames(as.list(e4_val_sub), unname(VAL_SET_LABELS))) |>
+  set_header_labels(values = setNames(as.list(e4_val_sub), unname(E3_SET_LABELS))) |>
   set_header_labels(`Development (optimism-corrected)` = "Development\n(optimism-corrected)") |>
-  add_header_row(values = c("", "", "", "Temporal validation"), colwidths = c(1, 1, 1, 4)) |>
-  align(i = 1, align = "center", part = "header") |> align(j = 3:7, align = "center", part = "all") |>
+  add_header_row(values = c("", "", "", "Temporal validation"), colwidths = c(1, 1, 1, 5)) |>
+  align(i = 1, align = "center", part = "header") |> align(j = 3:8, align = "center", part = "all") |>
   merge_v(j = "Outcome") |> valign(j = 1, valign = "top", part = "body") |>
   hline(i = which(head(delta_rows$Outcome, -1) != tail(delta_rows$Outcome, -1)), border = thin_rule) |>
   add_footer_lines(c(
     "Values are ΔAUC (95% CI). ΔAUC >0 indicates a higher AUC for the first-named model.",
+    LS_CI_NOTE,
+    "Pre-checkup score ≥40: participants with a PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup (the population also shown in Table 2).",
     "—, not applicable.",
-    ABBREV_NOTE_NOPPV,
+    abbrev_note("AUC", "ΔAUC", "FY", "HRQOL", "MCS", "PCS"),
     OUTCOME_NOTE, time_note()
   ))
 # 2 つのモデルを左右に並べ、同じ行 (アウトカム × 対象集団 × 抽出割合) で比べられる形にする
@@ -757,7 +841,7 @@ writeLines(c(s1_rows$line, s5_rows$line), file.path(DIR_TABLES, "eMethods6_value
 save_tables(list(`eTable 4. Discrimination and calibration` = tf(ft_e3)),
             "eTable4", landscape = TRUE, widths = c(0.8, 0.8, 1.5, 0.95, 0.95, 1.0, 0.55, 1.05, 0.55, 0.9))
 save_tables(list(`eTable 9. Differences in AUC between models (ΔAUC, 95% CI)` = tf(ft_e4)),
-            "eTable9", landscape = TRUE, widths = c(1.05, 1.75, 1.25, rep(1.25, 4)))
+            "eTable9", landscape = TRUE, widths = c(1.0, 1.6, 1.15, rep(1.1, 5)))
 save_tables(list(`eTable 6. Identification of high-risk participants in the development cohort (apparent performance; outcome at ≈18 months)` = tf(ft_e5)),
             "eTable6")
 
@@ -773,7 +857,7 @@ s1_tab <- bind_rows(sens$s1_dev, sens$s1_ext) |>
   separate(quantity, into = c("weighting", "stat"), sep = "\\.") |>
   mutate(Outcome = OUTCOME_LABELS[DOMAIN_OF(outcome)],
          Cohort = if_else(set == "D", "Development (apparent)", "Temporal validation"),
-         Measure = S1_STATS[stat], value = fmt_ci(estimate, lo, hi)) |>
+         Measure = S1_STATS[stat], value = fix_minus(fmt_ci(estimate, lo, hi))) |>
   arrange(match(DOMAIN_OF(outcome), c("pcs", "mcs")), match(set, c("D", "V")), match(stat, names(S1_STATS))) |>
   select(Outcome, Cohort, Measure, weighting, value) |>
   pivot_wider(names_from = weighting, values_from = value)
@@ -784,15 +868,15 @@ ft_s1 <- flextable(s1_tab, col_keys = c("Outcome", "Cohort", "Measure", "unw", "
   hline(i = seq(3, nrow(s1_tab) - 1, by = 3), border = thin_rule) |>
   add_footer_lines(c(
     "The final models were applied without refitting. Unweighted: participants with known outcomes; in development, this is the apparent performance of the final model.",
-    "Inverse probability weighted: participants whose outcome was determined by registry events had a weight of 1; survey respondents without registry events, the inverse of their estimated probability of response (truncated at the 99th percentile); nonrespondents and participants who relocated, 0 (eMethods section 11).",
-    "95% CIs: bootstrap percentile intervals from 1000 samples (stratified by fiscal year in temporal validation), repeating the response model and truncation in each sample.",
-    "Abbreviations: AUC, area under the receiver operating characteristic curve; CI, confidence interval; MCS, mental component summary; PCS, physical component summary.",
+    "Inverse probability weighted: participants whose outcome was determined by registry events had a weight of 1; survey respondents without registry events, the inverse of their estimated probability of response (truncated at the 99th percentile); nonrespondents and participants who relocated, 0 (eMethods 11).",
+    "95% CIs: bootstrap percentile intervals from 1000 samples (stratified by fiscal year in temporal validation), repeating the response model and truncation in each sample. Unweighted values in temporal validation therefore have slightly different 95% CIs from those in eTable 4 (DeLong for the AUC, Wald for calibration).",
+    "Abbreviations: AUC, area under the receiver operating characteristic curve; MCS, mental component summary; PCS, physical component summary.",
     OUTCOME_NOTE, time_note("18m")
   ))
 s1_sel <- s1e4 |>
   mutate(Outcome = OUTCOME_LABELS[DOMAIN_OF(outcome)],
          Population = if_else(group == "all", "All eligible", "Pre-checkup score ≥40"),
-         Top = sprintf("Top %d%%", round(100 * frac)), value = fmt_pct_ci(estimate, lo, hi)) |>
+         Top = sprintf("Top %d%%", round(100 * frac)), value = fix_minus(fmt_pct_ci(estimate, lo, hi))) |>
   arrange(match(DOMAIN_OF(outcome), c("pcs", "mcs")), match(group, c("all", "pre_not_low")), frac) |>
   select(Outcome, Population, Top, model, measure, value) |>
   pivot_wider(names_from = c(model, measure), values_from = value, names_glue = "{model}_{measure}") |>
@@ -809,7 +893,7 @@ ft_s1_sel <- flextable(s1_sel) |>
     "Temporal validation cohort. Selection as high risk as in Table 2 (top 10%, 20%, or 30% of predicted risk among all eligible participants in the population); unweighted values are shown in Table 2.",
     "Sensitivity and PPV were weighted as above. 95% CIs: bootstrap percentile intervals from 1000 samples stratified by fiscal year.",
     "Pre-checkup score ≥40: PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup.",
-    "Abbreviations: CI, confidence interval; HRQOL, health-related quality of life; MCS, mental component summary; PCS, physical component summary; PPV, positive predictive value.",
+    "Abbreviations: HRQOL, health-related quality of life; MCS, mental component summary; PCS, physical component summary; PPV, positive predictive value.",
     OUTCOME_NOTE, time_note("18m")
   ))
 save_tables(list(`eTable 7A. Discrimination and calibration with inverse probability weighting (sensitivity analysis S1)` = tf(ft_s1),
@@ -836,6 +920,7 @@ ft_e6 <- summary_flextable(e6_body) |>
                  colwidths = c(1, 2, 2)) |>
   merge_v(j = 1, part = "header") |>
   align(i = 1, part = "header", align = "center") |>
+  add_footer_lines("Unknown outcome at approximately 18 months: no SF-8 score and neither care-need level ≥3 nor death by March 31 of the outcome survey year, or relocation out of the city without a prior event (eMethods 10).") |>
   fontsize(size = 8, part = "all") |> font(fontname = "Arial", part = "all")
 save_tables(list(`eTable 2. Participants with known and unknown outcomes (PCS composite, ≈18 months) in the development and temporal validation cohorts` = ft_e6),
             "eTable2")
@@ -911,7 +996,7 @@ stopifnot(nrow(e9_body) == 2 * 3 * (length(E9_MODELS) + length(E9_CONTRASTS)))
 ft_e7 <- flextable(e9_body) |>
   set_header_labels(Outcome = "Model fitted for", Component = "Outcome evaluated", Model = "Model or contrast",
                     Development = "Development\n(optimism-corrected)", Validation = "Temporal validation",
-                    citl_u = "Unadjusted", citl_a = "Adapted", slope_u = "Unadjusted", slope_a = "Adapted") |>
+                    citl_u = "Unadjusted", citl_a = "Converted", slope_u = "Unadjusted", slope_a = "Converted") |>
   add_header_row(values = c("", "AUC or ΔAUC", "Calibration-in-the-large\n(temporal validation)",
                             "Calibration slope\n(temporal validation)"), colwidths = c(3, 2, 2, 2)) |>
   align(i = 1, align = "center", part = "header") |>
@@ -921,17 +1006,20 @@ ft_e7 <- flextable(e9_body) |>
   add_footer_lines(c(
     "Values are AUC or ΔAUC (95% CI). ΔAUC >0 indicates a higher AUC for the first-named model.",
     "Models were fitted for the composite outcome at ≈18 months (poor HRQOL, care-need level ≥3, or death) and were not refitted for each component. Development values are optimism-corrected using the same bootstrap samples as for the composite outcome (location-shifted 95% CI); temporal validation values are for the final models (DeLong 95% CI; paired DeLong for ΔAUC).",
+    LS_CI_NOTE,
     "Components were evaluated among participants with a known composite outcome. (a) Participants who had neither reached care-need level ≥3 nor died by March 31 of the outcome survey year and had an SF-8 score; the outcome was a score <40. This evaluation is conditional on survival, not reaching care-need level ≥3, and responding to the survey. (b) All participants with a known composite outcome; the outcome was care-need level ≥3 or death by March 31 of the outcome survey year.",
     "In component (a), the HRQOL-based and combined models share the SF-8 measurement with the outcome, which may favor these models.",
     "Temporal validation includes participants from both the FY2022 and FY2023 checkups. For the composite outcome, calibration is that of the final models. For the components, unadjusted calibration uses the predicted risk of the composite outcome as it is.",
-    "Adapted: predicted risks converted to component-specific risks by the method of Gondrie et al (J Clin Epidemiol 2012): risk = 1 − (1 − p)^k, where p is the predicted risk of the composite outcome and k is the incidence of the component divided by the incidence of the composite outcome among all participants with a known composite outcome in the development cohort (components counted whenever they occurred). The original method multiplies the baseline cumulative hazard of a Cox model by k; applying it to a logistic model is an approximation. Because converted risks refer to all participants, calibration for component (a) was assessed among all participants with a known composite outcome (outcome: SF-8 score <40; participants who reached care-need level ≥3 or died without such a score were counted as nonevents), whereas the AUC for (a) was assessed in the conditional population described above. Adaptation does not change the AUC. Calibration was not assessed in the development cohort because k was estimated there.",
+    "Predicted risks converted to component-specific risks by the method of Gondrie et al (eMethods 13): risk = 1 − (1 − p)^k, where p is the predicted risk of the composite outcome and k is the incidence of the component divided by the incidence of the composite outcome among all participants with a known composite outcome in the development cohort (components counted whenever they occurred). The original method multiplies the baseline cumulative hazard of a Cox model by k; applying it to a logistic model is an approximation. Because converted risks refer to all participants, calibration for component (a) was assessed among all participants with a known composite outcome (outcome: SF-8 score <40; participants who reached care-need level ≥3 or died without such a score were counted as nonevents), whereas the AUC for (a) was assessed in the conditional population described above. Conversion does not change the AUC. Calibration was not assessed in the development cohort because k was estimated there.",
     "Calibration slope <1 indicates predictions that are too extreme, >1 predictions that are too moderate; calibration-in-the-large >0 indicates that risk was underestimated on average. —, not applicable.",
-    ABBREV_NOTE_NOPPV,
+    abbrev_note("AUC", "ΔAUC", "FY", "HRQOL", "MCS", "PCS", "SF-8"),
     OUTCOME_NOTE, time_note("18m")
   )) |>
   fontsize(size = 7, part = "all") |> font(fontname = "Arial", part = "all") |>
-  sup_header("citl_a", "Adapted") |> sup_header("slope_a", "Adapted") |>
-  sup_footer(6) |>
+  sup_header("citl_a", "Converted") |> sup_header("slope_a", "Converted") |>
+  # 脚注 a (Converted の定義) は行番号ではなく本文で探す (脚注の行が増減してもずれないように)
+  (\(ft) { i <- grep("^Predicted risks converted", ft$footer$dataset[[1]]); stopifnot(length(i) == 1)
+           sup_footer(ft, i) })() |>
   fontsize(size = 7, part = "all") |> font(fontname = "Arial", part = "all")
 save_tables(list(`eTable 10. Discrimination and calibration for each component of the composite outcome (≈18 months)` = ft_e7),
             "eTable10", landscape = TRUE, widths = c(0.75, 1.45, 1.3, 1.0, 1.0, 0.95, 0.95, 0.95, 0.95))
@@ -1050,13 +1138,22 @@ tl_followup <- filter(tl_plot, survey != "pre") |>
            if_else(cohort == "Development (FY2020)", if_else(survey == "6m", 0.04, -0.04), 0),
          label_y = row_y -
            if_else(cohort == "Development (FY2020)", 0.34, 0.19),
+         # 「after checkup」は脚注に書く (10 pt では開発の 2 つのラベルが重なるため 2 行にする)
          outcome_label = recode(as.character(survey),
-                                "6m" = "Outcome\n≈6 months\nafter checkup",
-                                "18m" = "Outcome\n≈18 months\nafter checkup")) |>
+                                "6m" = "Outcome\n≈6 months",
+                                "18m" = "Outcome\n≈18 months")) |>
+  # 開発の約半年後と約 1 年半後のラベルは 1 年しか離れておらず、10 pt では接するので、1 年半後を右に寄せる
+  mutate(label_hjust = if_else(cohort == "Development (FY2020)" & survey == "18m", 0.2, 0.5)) |>
   arrange(cohort, desc(survey_date))
 survey_breaks <- sort(unique(tl_plot$survey_date))
-# 健診の開始・終了と調査の実施月を表示する。同月内の 1 日差は 1 目盛りにまとめる。
-axis_months <- tibble(date = c(survey_breaks, exams$exam_start, exams$exam_end)) |>
+# 英語の月名は OS のロケールに依存させない
+month_lab <- function(d) paste(month.abb[as.integer(format(d, "%m"))], format(d, "%Y"))
+# 健診の期間は帯の上のラベルに書く
+exams <- exams |>
+  mutate(exam_label = paste0("Prediction time\n(checkup)\n", month_lab(exam_start), "–", month_lab(exam_end)))
+# 横軸には調査の実施月だけを表示する (10 pt では健診の開始・終了月まで並べると重なるため。2026-10-11)。
+# 同月内の 1 日差は 1 目盛りにまとめる。
+axis_months <- tibble(date = survey_breaks) |>
   mutate(month = format(date, "%Y-%m")) |>
   group_by(month) |>
   summarise(date = min(date), .groups = "drop") |>
@@ -1077,8 +1174,8 @@ efig1 <- ggplot(tl_plot) +
             fill = scales::alpha(JAMA_COLS[3], 0.30), colour = JAMA_COLS[1], linewidth = 0.4) +
   geom_text(data = exams,
             aes(x = exam_start + (exam_end - exam_start) / 2,
-                y = row_y + half_height + 0.06),
-            label = "Prediction time\n(checkup)", vjust = 0, size = 2.65,
+                y = row_y + half_height + 0.06, label = exam_label),
+            vjust = 0, size = STYLE$efig_text / .pt,
             lineheight = 1.05, fontface = "bold", colour = JAMA_COLS[1], family = STYLE$font) +
   geom_point(data = filter(tl_plot, survey == "pre"),
              aes(survey_date, row_y, colour = survey, shape = survey), size = 2.7) +
@@ -1086,27 +1183,23 @@ efig1 <- ggplot(tl_plot) +
              aes(survey_date, arrow_y, colour = survey, shape = survey), size = 2.7) +
   geom_text(data = filter(tl_plot, survey == "pre"),
             aes(survey_date, row_y - 0.19, label = lab),
-            vjust = 1, size = 2.5, lineheight = 1.1, colour = "#555D66", family = STYLE$font) +
+            vjust = 1, size = STYLE$efig_text / .pt, lineheight = 1.1, colour = "#555D66", family = STYLE$font) +
   geom_text(data = tl_followup,
-            aes(survey_date, label_y, colour = survey, label = outcome_label),
-            vjust = 1, size = 2.6, lineheight = 1.1, fontface = "bold", family = STYLE$font) +
+            aes(survey_date, label_y, colour = survey, label = outcome_label, hjust = label_hjust),
+            vjust = 1, size = STYLE$efig_text / .pt, lineheight = 1.1, fontface = "bold", family = STYLE$font) +
   scale_colour_manual(values = c(pre = JAMA_COLS[7], "6m" = JAMA_COLS[2], "18m" = JAMA_COLS[4])) +
   scale_shape_manual(values = c(pre = 16, "6m" = 17, "18m" = 18)) +
-  # 健診期間の開始・終了月と調査月だけを表示する。
-  # 英語の月名は OS のロケールに依存させない。
-  scale_x_date(breaks = axis_breaks,
-                labels = paste(month.abb[as.integer(format(axis_breaks, "%m"))],
-                               format(axis_breaks, "%Y")),
-                expand = expansion(add = c(135, 135))) +
+  # 調査の実施月だけを表示する (健診の期間は帯の上のラベル)。目盛りの間は 1 年以上あるのでラベルは水平に置く
+  scale_x_date(breaks = axis_breaks, labels = month_lab(axis_breaks),
+               expand = expansion(add = c(230, 230))) +   # 両端のラベルが切れないように
   scale_y_continuous(breaks = c(1.5, 3, 4.5, 6.35), labels = rev(cohort_labels),
                      limits = c(0.30, 7.25), expand = expansion(mult = 0)) +
   labs(x = NULL, y = NULL) +
-  theme_minimal(base_size = 8.5, base_family = STYLE$font) +
+  theme_minimal(base_size = STYLE$efig_text, base_family = STYLE$font) +
   theme(panel.grid = element_blank(),
-        axis.text.y = element_text(colour = "#252B32", lineheight = 1.1, hjust = 1,
+        axis.text.y = element_text(colour = "#252B32", size = STYLE$efig_text, lineheight = 1.1, hjust = 1,
                                    margin = margin(r = 8)),
-        axis.text.x = element_text(colour = "#333A42", size = 7.5, angle = 45,
-                                   hjust = 1, vjust = 1, margin = margin(t = 5)),
+        axis.text.x = element_text(colour = "#333A42", size = STYLE$efig_text, margin = margin(t = 3)),
         axis.ticks.x = element_line(colour = "#89919A", linewidth = 0.3),
         axis.ticks.length = grid::unit(1.2, "mm"),
         axis.line.x = element_line(colour = "#A9B0B8", linewidth = 0.3),
@@ -1114,14 +1207,16 @@ efig1 <- ggplot(tl_plot) +
         plot.margin = margin(5, 5, 4, 4))
 # ragg は Windows の非 ASCII のパスで保存に失敗する場合があるため、
 # 一時ファイルへ描画してから目的のフォルダへコピーする。
+EFIG1_H <- 160
 efig1_png_tmp <- tempfile("eFigure1_", fileext = ".png")
-ggsave(efig1_png_tmp, efig1, width = STYLE$width_2col, height = 118,
+ggsave(efig1_png_tmp, efig1, width = STYLE$efig_width, height = EFIG1_H,
        units = "mm", dpi = STYLE$dpi, bg = "white")
 stopifnot(file.exists(efig1_png_tmp), file.info(efig1_png_tmp)$size > 0,
           file.copy(efig1_png_tmp, file.path(DIR_FIGURES, "eFigure1.png"), overwrite = TRUE))
 unlink(efig1_png_tmp)
 ggsave(file.path(DIR_FIGURES, "eFigure1.pdf"), efig1,
-       width = STYLE$width_2col, height = 118, units = "mm", device = cairo_pdf)
+       width = STYLE$efig_width, height = EFIG1_H, units = "mm", device = cairo_pdf)
+write_emf("eFigure1", STYLE$efig_width, EFIG1_H, \() print(efig1))
 
 # 脚注は画像・PDF に埋め込まず、本文の figure legend 用に別ファイルへ保存する。
 efig1_intervals <- e1$timeline |>
@@ -1131,12 +1226,12 @@ efig1_intervals <- e1$timeline |>
                         min, max, if_else(survey == "pre", "before", "after"), median))
 writeLines(c(
   "eFigure 1. Timing of prediction and outcome assessment.",
-  "Prediction is made at each participant's checkup. Light blue bars span the observed checkup dates within each cohort; each participant has a single prediction time at their own checkup. Gray circles indicate the pre-checkup SF-8 assessment. Triangles and diamonds indicate outcome assessment at approximately 6 and 18 months after the checkup, respectively. The horizontal axis shows the start and end months of the checkup periods and the months of the displayed surveys on a linear calendar scale.",
+  "Prediction is made at each participant's checkup. Light blue bars span the observed checkup dates within each cohort; each participant has a single prediction time at their own checkup. Gray circles indicate the pre-checkup SF-8 assessment. Triangles and diamonds indicate outcome assessment at approximately 6 and 18 months after the checkup, respectively. The horizontal axis shows the months of the displayed surveys on a linear calendar scale; the first and last months of each checkup period are given above its bar.",
   "Horizontal arrows extend from the checkup bar toward the outcome assessments. Arrow colors match the corresponding outcome symbols: orange for approximately 6 months and red for approximately 18 months. The two development-cohort arrows are separated vertically for clarity. Follow-up is measured from each participant's own checkup date, not from the pre-checkup SF-8 assessment, the end of the cohort's checkup period, or an earlier outcome assessment.",
   "The 6- and 18-month labels denote approximate prediction horizons. Actual minimum-to-maximum intervals and medians are listed below, in years rounded to one decimal place. Intervals are calculated using March 31 of the survey year; outcome events are assessed through that date.",
   efig1_intervals$text,
   "The FY2023 validation cohort and the FY2023 approximately 6-month validation cohort have different eligibility criteria and are shown separately.",
-  "FY, fiscal year; SF-8, 8-item Short-Form Health Survey; y, years."
+  "FY indicates fiscal year; SF-8, 8-item Short-Form Health Survey."
 ), file.path(DIR_FIGURES, "eFigure1_footnote.txt"), useBytes = TRUE)
 
 # =============================================================================
@@ -1158,7 +1253,7 @@ draw_efig2 <- function() {
   grid.newpage()
   for (i in seq_along(efig2_g)) {
     geo <- efig2_geo[[i]]; x0 <- efig2_pos$x[i]; y0 <- efig2_pos$y[i]
-    grid.text(letters[i], x = unit(x0 + 1, "mm"), y = unit(efig2_h - y0 - 1, "mm"), just = c("left", "top"),
+    grid.text(LETTERS[i], x = unit(x0 + 1, "mm"), y = unit(efig2_h - y0 - 1, "mm"), just = c("left", "top"),
               gp = gpar(fontsize = 9, fontface = "bold", fontfamily = "sans"))
     # draw_flow() と同じ置き方で、この段の範囲の中に描く
     pushViewport(viewport(x = unit(x0, "mm"), y = unit(efig2_h - y0 - EFIG2_LETTER_MM, "mm"), just = c("left", "top"),
@@ -1181,6 +1276,41 @@ save_efig2(".tiff", \(f) ragg::agg_tiff(f, width = efig2_w, height = efig2_h, un
                                         compression = "lzw", background = "white"))
 save_efig2(".pdf",  \(f) grDevices::cairo_pdf(f, width = efig2_w / 25.4, height = efig2_h / 25.4))
 message(sprintf("図: eFigure2 (%.0f x %.0f mm)", efig2_w, efig2_h))
+# ↑ 3 つを 1 枚にまとめた図 (8 pt) は、結果レポート (reports/client_report) 用。
+# Supplement 用は、JAMA の規定 (図の中の文字は 10 pt) に合わせて 10 pt で作る。10 pt では 3 つが 1 ページに
+# 収まらない (縦でも横でも) ので、a–c を別のファイルにして 1 ページずつ貼る (eFigure2a/b/c)
+efig2p_g <- map(flow$diagrams, \(f) build_flow(f, fontsize = STYLE$efig_text, wrap_width = 60, gap = 0.8,
+                                               fontfamily = STYLE$font))
+efig2p_geo <- map(efig2p_g, flow_geometry)
+stopifnot(map_dbl(efig2p_geo, "width_mm") <= STYLE$efig_width)
+EFIG2P_LETTER_MM <- 6
+for (i in seq_along(efig2p_g)) {
+  geo <- efig2p_geo[[i]]
+  h <- geo$height_mm + EFIG2P_LETTER_MM
+  draw_panel <- function() {
+    grid.newpage()
+    grid.text(LETTERS[i], x = unit(1, "mm"), y = unit(h - 1, "mm"), just = c("left", "top"),
+              gp = gpar(fontsize = STYLE$efig_text, fontface = "bold", fontfamily = STYLE$font))
+    pushViewport(viewport(x = unit(0, "mm"), y = unit(geo$height_mm, "mm"), just = c("left", "top"),
+                          width = unit(geo$width_mm, "mm"), height = unit(geo$height_mm, "mm")))
+    pushViewport(viewport(y = unit(1, "npc") + unit(geo$vp_shift, "mm"), just = "top",
+                          width = unit(geo$vp_w, "mm"), height = unit(geo$vp_h, "mm")))
+    grid.draw(build_grid(efig2p_g[[i]]))
+    popViewport(2)
+  }
+  name <- paste0("eFigure2", letters[i])
+  # 幅は他の eFigure と同じ efig_width にそろえる (Word で 3 ページとも同じ倍率になる)
+  for (ext in c(".png", ".pdf")) {
+    tmp <- tempfile(name, fileext = ext)
+    if (ext == ".png") ragg::agg_png(tmp, width = STYLE$efig_width, height = h, units = "mm", res = STYLE$dpi,
+                                     background = "white")
+    else grDevices::cairo_pdf(tmp, width = STYLE$efig_width / 25.4, height = h / 25.4)
+    draw_panel(); dev.off()
+    stopifnot(file.copy(tmp, file.path(DIR_FIGURES, paste0(name, ext)), overwrite = TRUE)); unlink(tmp)
+  }
+  write_emf(name, STYLE$efig_width, h, draw_panel)
+  message(sprintf("図: %s (%.0f x %.0f mm)", name, STYLE$efig_width, h))
+}
 
 # =============================================================================
 # eFigure 3. 感度分析
@@ -1192,7 +1322,8 @@ s4_n <- perf_ext$perf |>
 e3 <- sens$efig3 |>
   mutate(fy = str_extract(label, "FY\\d{4}")) |> left_join(s4_n, by = "fy") |>
   mutate(label = if_else(analysis == "S4", sprintf("%s (n = %s)", label, jama_int(n)), label)) |>
-  mutate(row =factor(paste0(label, "\n[", type, "]"), levels = rev(paste0(label, "\n[", type, "]"))))
+  # 行の名前は 10 pt で収まるよう 26 文字で折り返す (eFigure の文字は 10 pt)
+  mutate(row_lab = paste0(str_wrap(label, 26), "\n[", type, "]"), row = factor(row_lab, levels = rev(row_lab)))
 # AUC と ΔAUC は横軸の範囲が違うので、別々の図を作って patchwork で左右に並べる。
 # AUC の軸は他の AUC の図と同じ 0.5–1.0 に固定し、参照線 0.7・0.8 を引く (§7.13 (d))
 #   左右とも「タイトル = モデル」「横軸 = 指標」の同じ形にそろえる。
@@ -1211,16 +1342,15 @@ forest_panel <- function(d, title, xlab, xlim, refs, show_y = TRUE, favor = NULL
     # expand = FALSE にするので、横軸の余白 (範囲の 5%) は自分で足す
     coord_cartesian(xlim = xlim + c(-0.05, 0.05) * diff(xlim), ylim = c(0.4, nrow(d) + 0.6),
                     expand = FALSE, clip = "off") +
-    labs(x = xlab, y = NULL, title = title) + theme_paper() +
-    theme(plot.title = element_text(size = STYLE$base_size),
-          axis.title.x = element_text(margin = margin(t = 9, unit = "mm")),
+    labs(x = xlab, y = NULL, title = title) + theme_efig() +
+    theme(axis.title.x = element_text(margin = margin(t = 19, unit = "mm")),   # favor の 3 行分を空ける
           axis.text.y = if (show_y) element_text() else element_blank())
   if (!is.null(favor)) {
     # 下端 (y = 0.4) より下、目盛りの数字の下に置く (clip = "off" で枠の外に描く)
     span <- diff(xlim)
     p <- p + annotate("text", x = refs + c(-0.02, 0.02) * span, y = -0.25, label = favor,
                       hjust = c(1, 0), vjust = 1, lineheight = 0.9,
-                      size = STYLE$base_size / .pt * 0.85, family = STYLE$font)
+                      size = STYLE$efig_text / .pt, family = STYLE$font)
   }
   p
 }
@@ -1228,11 +1358,12 @@ p_auc <- forest_panel(e3 |> transmute(row, type, est = auc, lo = auc_lo, hi = au
                       "Checkup-based model", "AUC (95% CI)", STYLE$auc_limits, STYLE$auc_refs)
 d_rng <- range(c(e3$d_e5_lo, e3$d_e5_hi, 0), na.rm = TRUE)
 p_delta <- forest_panel(e3 |> transmute(row, type, est = d_e5, lo = d_e5_lo, hi = d_e5_hi),
-                        "HRQOL-based − checkup-based model", "ΔAUC (95% CI)",
+                        "HRQOL-based −\ncheckup-based model", "ΔAUC (95% CI)",
                         d_rng + c(-0.01, 0.01), 0, show_y = FALSE,
-                        favor = c("Favors\ncheckup-based model", "Favors\nHRQOL-based model"))
-efig3 <- p_auc + p_delta + plot_layout(guides = "collect") & theme(legend.position = "bottom")
-save_fig(efig3, "eFigure3", height_mm = 120)
+                        favor = c("Favors\ncheckup-\nbased model", "Favors\nHRQOL-\nbased model"))
+efig3 <- p_auc + p_delta + plot_layout(guides = "collect") &
+  theme(legend.position = "bottom") & guides(shape = guide_legend(nrow = 2, byrow = TRUE))
+save_efig(efig3, "eFigure3", height_mm = 180)   # 行の名前が 3 行になる行があるので、行の間を広く取る
 # eFigure 3 に描いた値 (結果レポートが本文の数値を照合する。書式は図の元の推定値を小数 3 桁)
 readr::write_excel_csv(e3 |> transmute(analysis, label, type,
                                       auc = sprintf("%.3f", auc), auc_lo = sprintf("%.3f", auc_lo), auc_hi = sprintf("%.3f", auc_hi),
@@ -1245,7 +1376,7 @@ readr::write_excel_csv(e3 |> transmute(analysis, label, type,
 # 換算前 (複合アウトカムの予測リスクをそのまま) を破線、Gondrie らの方法で換算した後を実線で重ねる
 EFIG4_ROWS <- c(low_hrqol = "(a) Poor HRQOL (<40), all participants\nwith a known composite outcome",
                 ltc3_death = "(b) Care-need level ≥3 or death")
-EFIG4_VERSIONS <- c(adapted = "Adapted (component-specific risk)",
+EFIG4_VERSIONS <- c(adapted = "Converted (component-specific risk)",
                     unadjusted = "Unadjusted (risk of the composite outcome)")
 efig4_d <- perf_ext$comp_calib |>
   filter(model == "checkup") |>
@@ -1260,17 +1391,19 @@ efig4 <- ggplot(efig4_d, aes(p, observed, linetype = version)) +
   scale_linetype_manual(values = setNames(c("solid", "dashed"), EFIG4_VERSIONS)) +
   scale_x_continuous(labels = scales::percent) + scale_y_continuous(labels = scales::percent) +
   coord_cartesian(xlim = c(0, STYLE$calib_limit), ylim = c(0, STYLE$calib_limit)) +
-  labs(x = "Predicted risk", y = "Observed proportion") + theme_paper() +
-  theme(strip.text.y = element_text(size = STYLE$base_size - 1))
-save_fig(efig4, "eFigure4", height_mm = 150)
+  labs(x = "Predicted risk", y = "Observed proportion") + theme_efig() +
+  theme(strip.text.y = element_text(size = STYLE$efig_text))
+save_efig(efig4, "eFigure4", height_mm = 160)
 k_lab <- c(low_hrqol = "poor HRQOL", ltc3_death = "care-need level ≥3 or death")
 writeLines(c(
   "eFigure 4. Calibration of the checkup-based model for each component of the composite outcome in the temporal validation cohort (≈18 months).",
-  "Dashed lines use the predicted risk of the composite outcome as it is; solid lines use risks converted to component-specific risks by the method of Gondrie et al: risk = $1 - (1 - p)^{k}$, where $p$ is the predicted risk of the composite outcome and $k$ is the incidence of the component divided by the incidence of the composite outcome in the development cohort.",
+  "Outcomes at approximately 18 months after the checkup. Dashed lines use the predicted risk of the composite outcome as it is; solid lines use risks converted to component-specific risks by the method of Gondrie et al (eMethods 13): risk = $1 - (1 - p)^{k}$, where $p$ is the predicted risk of the composite outcome and $k$ is the incidence of the component divided by the incidence of the composite outcome in the development cohort.",
   paste0("Conversion factors: ", paste(sprintf("%s, %s: $k$ = %.2f", OUTCOME_LABELS[DOMAIN_OF(perf_ext$comp_k$outcome)],
                                                k_lab[perf_ext$comp_k$component], perf_ext$comp_k$k), collapse = "; "), "."),
   "Both components are evaluated among all participants with a known composite outcome, because converted risks refer to all participants. For component (a), participants who reached care-need level ≥3 or died without an SF-8 score <40 are nonevents. $k$ was calculated with all participants with a known composite outcome in the development cohort as the denominator, counting each component whenever it occurred.",
-  "The gray diagonal line indicates perfect calibration. Curves are loess-smoothed."
+  "The gray diagonal line indicates perfect calibration. Curves are loess-smoothed.",
+  "PCS composite: PCS score <40, care-need level ≥3, or death; MCS composite: MCS score <40, care-need level ≥3, or death.",
+  "HRQOL indicates health-related quality of life; MCS, mental component summary; PCS, physical component summary; SF-8, 8-item Short-Form Health Survey."
 ), file.path(DIR_FIGURES, "eFigure4_footnote.txt"), useBytes = TRUE)
 
 # =============================================================================
