@@ -204,6 +204,9 @@ abbrev_note <- function(...) {
 LAB_ABBREV_E1 <- abbrev_note("γ-GTP", "ALT", "AST", "Cr", "eGFR", "HbA1c", "HDL", "LDL", "NGSP", "QMCOO")
 LAB_ABBREV_E3 <- abbrev_note("γ-GTP", "ALT", "AST", "eGFR", "HbA1c", "HDL", "LDL", "MCS", "NGSP", "PCS", "QMCOO", "SD")
 SI_NOTE <- "SI conversion factors: To convert HDL and LDL cholesterol to mmol/L, multiply by 0.0259; triglycerides to mmol/L, multiply by 0.0113; AST, ALT, and γ-GTP to μkat/L, multiply by 0.0167; HbA1c to proportion of total hemoglobin, multiply by 0.01; serum creatinine to μmol/L, multiply by 88.4; eGFR to mL/s/1.73 m², multiply by 0.0167."
+# eTable 3 にはクレアチニンの行がないので、その換算を除いた版
+SI_NOTE_NOCR <- sub("serum creatinine to μmol/L, multiply by 88.4; ", "", SI_NOTE, fixed = TRUE)
+stopifnot(SI_NOTE_NOCR != SI_NOTE)
 # 変数の区分 (Table 1・eTable 3・eTable 2 で区分の見出し行を入れる)
 VAR_SECTION <- c(
   setNames(rep("Demographics", 2), c("age", "sex")),
@@ -287,12 +290,15 @@ summary_rows <- function(body, stat_cols) {
   body <- body |> mutate(across(all_of(stat_cols), \(x) if_else(int_row, str_replace_all(x, "(\\d+)\\.0(?!\\d)", "\\1"), x)))
   add_sections(body |> select(label, all_of(stat_cols)), body$variable)
 }
+# 健診前の SF-8 の時期 (Table 1・eTable 2 の脚注)
+PRE_SF8_NOTE <- "Pre-checkup SF-8: scores in the most recent March survey before the checkup that included the SF-8 (0.2 to 1.8 years before the checkup; eMethods 2)."
 summary_flextable <- function(out) {
   sec_i <- attr(out, "section_i")
   flextable(out) |> span_rows(sec_i) |>
     align(j = seq(2, ncol(out)), align = "center", part = "all") |>
     add_footer_lines(c("Abbreviations: γ-GTP, γ-glutamyltransferase; ALT, alanine aminotransferase; AST, aspartate aminotransferase; eGFR, estimated glomerular filtration rate; HbA1c, hemoglobin A1c; HDL, high-density lipoprotein; IQR, interquartile range; LDL, low-density lipoprotein; MCS, mental component summary; NGSP, National Glycohemoglobin Standardization Program; PCS, physical component summary; QMCOO, Questionnaire for Medical Checkup of Old-Old; SF-8, 8-item Short-Form Health Survey.",
-                       "SI conversion factors: To convert HDL and LDL cholesterol to mmol/L, multiply by 0.0259; triglycerides to mmol/L, multiply by 0.0113; AST, ALT, and γ-GTP to μkat/L, multiply by 0.0167; HbA1c to proportion of total hemoglobin, multiply by 0.01; eGFR to mL/s/1.73 m², multiply by 0.0167.")) |>
+                       "SI conversion factors: To convert HDL and LDL cholesterol to mmol/L, multiply by 0.0259; triglycerides to mmol/L, multiply by 0.0113; AST, ALT, and γ-GTP to μkat/L, multiply by 0.0167; HbA1c to proportion of total hemoglobin, multiply by 0.01; eGFR to mL/s/1.73 m², multiply by 0.0167.",
+                       PRE_SF8_NOTE)) |>
     fontsize(size = 8, part = "all") |> font(fontname = "Arial", part = "all")
 }
 make_summary_table <- function(body, n, stat_cols, header_names) {
@@ -582,7 +588,7 @@ ft_e1 <- flextable(etbl1 |> rename(Domain = domain, Predictor = predictor,
   merge_v(j = "Domain") |> valign(j = 1, valign = "top", part = "body") |>
   # 領域の境目に細い線を引く
   hline(i = which(head(etbl1$domain, -1) != tail(etbl1$domain, -1)), border = thin_rule) |>
-  add_footer_lines(c("Ref, reference category (lowest-risk response). Predictors were standardized before penalization in ridge regression.",
+  add_footer_lines(c("Ref, reference category (for questionnaire items, the lowest-risk response). Predictors were standardized before penalization in ridge regression.",
                      "QMCOO wording follows the official English version (eMethods 1); the Japanese wording is that of the Ministry of Health, Labour and Welfare questionnaire. Total: 39 parameters.",
                      LAB_ABBREV_E1, SI_NOTE)) |>
   fontsize(size = 7.5, part = "all") |> font(fontname = "Arial", part = "all")
@@ -640,7 +646,7 @@ ft_e2 <- flextable(e2_body) |>
     "Values are log-odds coefficients per unit of the predictor in original units, reported to 4 decimal places so that the model can be applied [standardized log-odds coefficient in brackets: per SD of the predictor in the development data, for continuous predictors and dummy variables alike]. The predicted risk is 1/(1 + exp(−LP)), where LP is the intercept plus the sum of coefficients multiplied by predictor values; triglycerides, AST, ALT, and γ-GTP enter as natural logarithms.",
     "Standardized coefficients indicate relative contribution to prediction and are not causal effects; contributions are shared among correlated laboratory values.",
     "The ≈18-month models are the main analysis; the ≈6-month models are exploratory.",
-    LAB_ABBREV_E3, SI_NOTE,
+    LAB_ABBREV_E3, SI_NOTE_NOCR,
     OUTCOME_NOTE, time_note(c("18m", "6m"))
   )) |>
   fontsize(size = 7.5, part = "all") |> font(fontname = "Arial", part = "all")
@@ -729,7 +735,7 @@ ft_e3 <- flextable(e3_body) |>
   hline(i = e3_rule, border = thin_rule) |>
   span_rows(e3_sec) |>
   add_footer_lines(c(
-    "Values in parentheses are 95% CIs unless otherwise indicated. Development values are optimism-corrected by bootstrap; temporal validation values are for the final models fitted in the development cohort.",
+    "Values in parentheses are 95% CIs unless otherwise indicated. Development values are optimism-corrected by bootstrap; temporal validation values are for the final models fitted in the development cohort (DeLong 95% CI for the AUC; Wald 95% CIs for calibration). Calibration in development is shown without CIs (eMethods 5). AUC optimism: mean difference between the AUC of each bootstrap model in its bootstrap sample and in the original development data.",
     "Median (2.5th to 97.5th percentile) across bootstrap samples.",
     "Fewer than 100 events in validation; interpret with caution (eMethods 6).",
     "Calibration slope <1 indicates predictions that are too extreme, >1 predictions that are too moderate; calibration-in-the-large >0 indicates that risk was underestimated on average. —, not applicable (development cohort only).",
@@ -771,7 +777,7 @@ ft_e4 <- flextable(delta_rows) |>
   merge_v(j = "Outcome") |> valign(j = 1, valign = "top", part = "body") |>
   hline(i = which(head(delta_rows$Outcome, -1) != tail(delta_rows$Outcome, -1)), border = thin_rule) |>
   add_footer_lines(c(
-    "Values are ΔAUC (95% CI). ΔAUC >0 indicates a higher AUC for the first-named model.",
+    "Values are ΔAUC (95% CI). ΔAUC >0 indicates a higher AUC for the first-named model. Temporal validation 95% CIs are paired DeLong intervals.",
     LS_CI_NOTE,
     "Pre-checkup score ≥40: participants with a PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup (the population also shown in Table 2).",
     "—, not applicable.",
@@ -802,14 +808,17 @@ ft_e5 <- flextable(e4dev) |>
   merge_v(j = c("Outcome", "Population")) |> valign(j = 1:2, valign = "top", part = "body") |>
   align(j = 3:7, align = "center", part = "all") |> align(i = 1, align = "center", part = "header") |>
   hline(i = seq(3, nrow(e4dev) - 1, by = 3), border = thin_rule) |>
+  # Table 2 と同じ順: Abbreviations → 一般の注 → 上付き a (抽出の定義は Table 2 の T2_NOTE_A と同じ)
   add_footer_lines(c(
+    abbrev_note("HRQOL", "MCS", "PCS", "PPV"),
     "Apparent performance: the final models were applied to the same development data on which they were fitted, so the values are expected to be optimistic. Performance in the temporal validation cohort is shown in Table 2.",
-    "Selected as high risk: participants in the top 10%, 20%, or 30% of predicted risk among all eligible participants in the population, regardless of whether the outcome was known; ties at the threshold were all included.",
     "Sensitivity: proportion of participants with the outcome who were selected. PPV: proportion of selected participants who had the outcome. Both were calculated among participants with a known outcome. Outcome, %: proportion with the outcome among those with a known outcome (the PPV expected if participants were selected at random).",
     "Pre-checkup score ≥40: PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup.",
-    "Abbreviations: HRQOL, health-related quality of life; MCS, mental component summary; PCS, physical component summary; PPV, positive predictive value.",
-    OUTCOME_NOTE, time_note("18m")
-  ))
+    OUTCOME_NOTE, time_note("18m"),
+    T2_NOTE_A
+  )) |>
+  sup_header("Top", "Selected as high risk") |>
+  (\(ft) { i <- match(T2_NOTE_A, ft$footer$dataset[[1]]); stopifnot(!is.na(i)); sup_footer(ft, i) })()
 # 文字の大きさと書体は、脚注・見出し行を足したあとに最後にかける (先にかけると足した行が既定の 11 pt になる)
 tf <- \(ft) ft |> fontsize(size = 7, part = "all") |> font(fontname = "Arial", part = "all")
 # 感度分析 S1・S5 の値を照合用のテキストファイルにまとめる (output/tables/eMethods6_values.txt)。
@@ -868,7 +877,7 @@ ft_s1 <- flextable(s1_tab, col_keys = c("Outcome", "Cohort", "Measure", "unw", "
   hline(i = seq(3, nrow(s1_tab) - 1, by = 3), border = thin_rule) |>
   add_footer_lines(c(
     "The final models were applied without refitting. Unweighted: participants with known outcomes; in development, this is the apparent performance of the final model.",
-    "Inverse probability weighted: participants whose outcome was determined by registry events had a weight of 1; survey respondents without registry events, the inverse of their estimated probability of response (truncated at the 99th percentile); nonrespondents and participants who relocated, 0 (eMethods 11).",
+    "Inverse probability weighted: participants whose outcome was determined by registry events had a weight of 1; survey respondents without registry events, the inverse of their estimated probability of response (truncated at the 99th percentile); nonrespondents and all participants who relocated, including those with an event before relocation, 0 (eMethods 11).",
     "95% CIs: bootstrap percentile intervals from 1000 samples (stratified by fiscal year in temporal validation), repeating the response model and truncation in each sample. Unweighted values in temporal validation therefore have slightly different 95% CIs from those in eTable 4 (DeLong for the AUC, Wald for calibration).",
     "Abbreviations: AUC, area under the receiver operating characteristic curve; MCS, mental component summary; PCS, physical component summary.",
     OUTCOME_NOTE, time_note("18m")
@@ -1320,7 +1329,8 @@ s4_n <- perf_ext$perf |>
   filter(str_starts(set, "S4_"), outcome == "y_pcs_18m", model == "checkup", stat == "auc") |>
   transmute(fy = str_remove(set, "S4_"), n)
 e3 <- sens$efig3 |>
-  mutate(fy = str_extract(label, "FY\\d{4}")) |> left_join(s4_n, by = "fy") |>
+  mutate(label = str_replace(label, "PCS < ", "PCS <"),   # 他の図表の "<40" と表記をそろえる
+         fy = str_extract(label, "FY\\d{4}")) |> left_join(s4_n, by = "fy") |>
   mutate(label = if_else(analysis == "S4", sprintf("%s (n = %s)", label, jama_int(n)), label)) |>
   # 行の名前は 10 pt で収まるよう 26 文字で折り返す (eFigure の文字は 10 pt)
   mutate(row_lab = paste0(str_wrap(label, 26), "\n[", type, "]"), row = factor(row_lab, levels = rev(row_lab)))

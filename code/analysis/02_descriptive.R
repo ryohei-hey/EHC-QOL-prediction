@@ -185,7 +185,7 @@ add_survey_stage <- function(f, yr, n_consented) {
                f$boxes[-1])
   f$exclusions[[1]]$reasons <- c(no_consent, f$exclusions[[1]]$reasons)
   f$exclusions[[1]]$n <- sum(f$exclusions[[1]]$reasons)
-  f$exclusions <- c(list(list(label = "Did not respond", reasons = no_resp, n = sum(no_resp))), f$exclusions)
+  f$exclusions <- c(list(list(label = "No survey response", reasons = no_resp, n = sum(no_resp))), f$exclusions)
   check_flow(f)
 }
 flow_survey <- function(fy, yr, labels, steps) {
