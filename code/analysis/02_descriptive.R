@@ -47,7 +47,24 @@ tbl1 <- tbl_summary(
 tbl1_body <- tbl1$table_body |>
   select(variable, var_type, row_type, label, stat_0, stat_1, stat_2)
 tbl1_n <- c(Overall = nrow(tbl1_data), Development = nrow(as_sets$D), Validation = nrow(as_sets$V))
-save_derived(list(body = tbl1_body, n = tbl1_n), "tbl1")
+# 約 1 年半後のアウトカム (2026-10-18 追加): 結果確定の人数 (割合はコホート全体に対する) と、
+# 主・副次アウトカムとその内訳 (割合は結果確定者に対する。内訳は low > ltc3 > death の順に 1 つに分類)
+oc_stats <- function(d) {
+  known <- !is.na(d$y_pcs_18m)
+  stopifnot(identical(known, !is.na(d$y_mcs_18m)))
+  nk <- sum(known)
+  pct <- \(x, den) sprintf("%d (%.1f)", as.integer(x), 100 * x / den)
+  c(known = pct(nk, nrow(d)),
+    unlist(map(c("pcs", "mcs"), \(dom) {
+      y <- d[[paste0("y_", dom, "_18m")]]; type <- d[[paste0("type_", dom, "_18m")]]
+      setNames(c(pct(sum(y %in% 1), nk), map_chr(c("low", "ltc3", "death"), \(k) pct(sum(type %in% k), nk))),
+               paste0(dom, c("", "_low", "_ltc3", "_death")))
+    })))
+}
+oc_d <- oc_stats(as_sets$D); oc_v <- oc_stats(as_sets$V)
+tbl1_outcome <- tibble(key = names(oc_d), stat_0 = oc_stats(bind_rows(as_sets$D, as_sets$V)),
+                       stat_1 = oc_d, stat_2 = oc_v)
+save_derived(list(body = tbl1_body, n = tbl1_n, outcome = tbl1_outcome), "tbl1")
 
 # ---- 2. eTable 1: 予測因子の定義 ----
 # プロトコル §7.13 (b') のドラフト (英語) をそのままデータにしたもの。
@@ -146,62 +163,31 @@ flow_outcomes <- bind_rows(
 )
 flow_assign <- tibble(set = c("Validation FY2022", "Validation FY2023", "Validation 6 months"),
                       n = c(as_sets$flow$V[["FY2022"]], as_sets$flow$V[["FY2023"]], as_sets$flow$V6m))
-# フロー図: 時間の順に、健診前の 3 月調査の対象住民 → 回答なし → 3 月調査の回答者 → 組入基準 (§5.1) を満たさない
-# → 組入基準を満たす → 除外 (§5.2) → 解析コホート。
-# 調査の対象住民・発送・返送の人数は市の調査対象選定資料の集計値、それより下は個人データ
-# (01 の screen_survey = 3 月調査の回答者のうち研究への同意者) から flow_from_data() (R/flow_helpers.R) で数える。
-# 返送数と研究データの人数の差は、研究への同意がない人とする。
-# 1 人が複数の理由に当たるときは、reasons に書いた順で最初の理由に数える
-sel_path <- list.files("reference", pattern = "選定過程資料.*[.]xlsx$", full.names = TRUE)
-stopifnot(length(sel_path) == 1)
-sel <- readxl::read_excel(sel_path, col_names = FALSE, .name_repair = "minimal")
-sel_row <- \(prefix) as.character(unlist(sel[str_starts(sel[[1]], prefix) %in% TRUE, ][1, ]))
-# 3 月に発送した調査の列 (追加調査 [10 月] の列は使わない)
-survey_counts <- function(yr) {
-  col <- which(sel_row("調査票作成・発送年度") == as.character(yr) & str_ends(sel_row("調査票発送時期"), "3月"))
-  stopifnot(length(col) == 1)
-  c(target = as.integer(sel_row("➀対象年齢")[col]), sent = as.integer(sel_row("実発送数")[col]),
-    returned = as.integer(sel_row("調査票回答")[col]))
-}
-not_eligible <- function(fy) list(label = "Did not meet inclusion criteria",
-                                  reasons = setNames(c("flag_sf8", "flag_nochk"),
-                                                     c("No SF-8 score", sprintf("Did not attend the %s checkup", fy))))
+# フロー図: 予測の時点である健診の受診者 → 組入基準 (§5.1) を満たさない → 組入基準を満たす → 除外 (§5.2)
+# → 解析コホート (2026-10-18 変更。以前は健診前の 3 月調査の対象住民から始めていたが、FY2023 の図が
+# 2022 年の調査から始まり分かりにくかったため)。個人データ (01 の screen_attend) から flow_from_data()
+# (R/flow_helpers.R) で数える。1 人が複数の理由に当たるときは、reasons に書いた順で最初の理由に数える
+not_eligible <- function(yr) list(label = "Did not meet inclusion criteria",
+                                  reasons = setNames(c("flag_noqx", "flag_age", "flag_noresp", "flag_sf8"),
+                                                     c("No QMCOO record", "Aged <75 years at checkup",
+                                                       sprintf("No response to the March %d survey", yr),
+                                                       sprintf("No SF-8 score in the March %d survey", yr))))
 excl_base <- c("Questionnaire items missing" = "flag_items",
                "Checkup measurements missing" = "flag_chk",
                "Care level ≥3 at checkup" = "flag_ltc3")
-# 個人データで数えたフローの上に、集計値の段 (調査の対象住民 → 発送されない・返送しない・同意がない) を足す
-add_survey_stage <- function(f, yr, n_consented) {
-  sc <- survey_counts(yr)
-  no_resp <- c("Not sent the survey" = sc[["target"]] - sc[["sent"]],
-               "Did not return the survey" = sc[["sent"]] - sc[["returned"]])
-  no_consent <- c("Did not consent to research use" = sc[["returned"]] - n_consented)
-  stopifnot(all(c(no_resp, no_consent) >= 0))
-  # 対象住民 → (回答なし) → 3 月調査の回答者 → (組入基準を満たさない: 同意なし + 個人データの理由) → …
-  # 市の資料の対象年齢「年度到達年齢 76 歳以上」は、調査の翌年度の末までに 76 歳 = 調査年の 3 月 31 日までに 75 歳。
-  # 研究データの回答者の生年月日もこの範囲に収まる (最も遅い生年月日: 2020 年調査 1945-03-30、2022 年調査 1947-03-31)
-  f$boxes <- c(list(list(label = sprintf("March %d survey target residents\n(aged ≥75 years by 31 March %d)", yr, yr),
-                         n = sc[["target"]]),
-                    list(label = sprintf("March %d survey respondents", yr), n = sc[["returned"]])),
-               f$boxes[-1])
-  f$exclusions[[1]]$reasons <- c(no_consent, f$exclusions[[1]]$reasons)
-  f$exclusions[[1]]$n <- sum(f$exclusions[[1]]$reasons)
-  f$exclusions <- c(list(list(label = "No survey response", reasons = no_resp, n = sum(no_resp))), f$exclusions)
-  check_flow(f)
-}
-flow_survey <- function(fy, yr, labels, steps) {
-  d <- as_sets$screen_survey[[fy]]
-  f <- flow_from_data(d, labels = c("(survey respondents)", labels), steps = c(list(not_eligible(fy)), steps))
-  inc <- attr(f, "included")
-  f <- add_survey_stage(f, yr, nrow(d))
-  attr(f, "included") <- d$id[inc]
+flow_attend <- function(fy, yr, labels, steps) {
+  d <- as_sets$screen_attend[[fy]]
+  f <- flow_from_data(d, labels = c(sprintf("Sukagawa Study members\nwho attended the %s checkup", fy), labels),
+                      steps = c(list(not_eligible(yr)), steps))
+  attr(f, "included") <- d$id[attr(f, "included")]
   f
 }
 flow_diagrams <- list(
-  FY2020 = flow_survey("FY2020", 2020, c("Met inclusion criteria", "Development cohort"),
+  FY2020 = flow_attend("FY2020", 2020, c("Met inclusion criteria", "Development cohort"),
                        list(list(label = "Excluded", reasons = excl_base))),
-  FY2022 = flow_survey("FY2022", 2022, c("Met inclusion criteria", "FY2022 validation cohort"),
+  FY2022 = flow_attend("FY2022", 2022, c("Met inclusion criteria", "FY2022 validation cohort"),
                        list(list(label = "Excluded", reasons = c(excl_base, "In development cohort" = "flag_in_dev")))),
-  FY2023 = flow_survey("FY2023", 2022, c("Met inclusion criteria", "≈6-month validation cohort", "FY2023 validation cohort"),
+  FY2023 = flow_attend("FY2023", 2022, c("Met inclusion criteria", "≈6-month validation cohort", "FY2023 validation cohort"),
                        list(list(label = "Excluded", reasons = c(excl_base, "In development cohort" = "flag_in_dev")),
                             list(label = "Excluded", reasons = c("In FY2022 validation cohort" = "flag_in_v22"))))
 )
@@ -222,15 +208,15 @@ add_note <- function(f, i, set_) {
   f$boxes[[i]]$note <- missing_note(set_)
   f
 }
-flow_diagrams$FY2020 <- add_note(flow_diagrams$FY2020, 4, "Development")
-flow_diagrams$FY2022 <- add_note(flow_diagrams$FY2022, 4, "Validation FY2022")
-flow_diagrams$FY2023 <- flow_diagrams$FY2023 |> add_note(4, "Validation 6 months") |> add_note(5, "Validation FY2023")
+flow_diagrams$FY2020 <- add_note(flow_diagrams$FY2020, 3, "Development")
+flow_diagrams$FY2022 <- add_note(flow_diagrams$FY2022, 3, "Validation FY2022")
+flow_diagrams$FY2023 <- flow_diagrams$FY2023 |> add_note(3, "Validation 6 months") |> add_note(4, "Validation FY2023")
 # 解析コホートがフロー図と同じ人になっているか確認する
 stopifnot(
   setequal(attr(flow_diagrams$FY2020, "included"), as_sets$D$id),
   setequal(attr(flow_diagrams$FY2022, "included"), as_sets$ids$V22),
   setequal(attr(flow_diagrams$FY2023, "included"), as_sets$ids$V23),
-  flow_diagrams$FY2023$boxes[[4]]$n == nrow(as_sets$V6m)
+  flow_diagrams$FY2023$boxes[[3]]$n == nrow(as_sets$V6m)
 )
 save_derived(list(steps = flow_steps, assign = flow_assign, outcomes = flow_outcomes, diagrams = flow_diagrams),
              "efig2_flow")

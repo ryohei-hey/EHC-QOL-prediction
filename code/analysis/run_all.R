@@ -30,6 +30,7 @@ scripts <- c(
   "07_diagnostics.R",          # 内部診断
   "08_by_sex.R",               # 性別ごとの主たる結果 (eTable 9)
   "09_recalibration.R",        # 外部検証での再較正 (eTable 5)
+  "10_e10_pcs_mcs.R",          # 健診前 PCS と MCS の上乗せの分解 (E10)
   "99_RENDER_outputs.R"        # 論文用の図表
 )
 

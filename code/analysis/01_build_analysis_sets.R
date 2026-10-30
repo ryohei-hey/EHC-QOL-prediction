@@ -116,23 +116,26 @@ for (fy in names(screen)) {
   E <- list(FY2020 = E20, FY2022 = E22, FY2023 = E23)[[fy]]
   stopifnot(setequal(ok$id, E$data$id))
 }
-# フロー図は時間の順に、健診前の 3 月調査の回答者 (研究への同意者) から始める:
-# SF-8 が算出できない → その年度の健診 (質問票) を受けていない → 健診時の除外基準。
-# 3 月調査は年度内に 76 歳以上の人に送るので、ここから始めると健診時 75 歳未満の人はいない (確かめる)
-survey_screen <- function(fy, pre_yr) {
+# フロー図は、予測の時点である健診の受診者 (その年度に質問票か計測・検査の記録がある研究参加者) から始める
+# (2026-10-18 変更。以前は健診前の 3 月調査の対象住民から始めていた):
+# 質問票の記録がない → 健診時に 75 歳未満 → 健診前の 3 月調査に回答していない → SF-8 が算出できない
+# → 健診時の除外基準。計測・検査だけで質問票の記録がない人は年齢が分からないので、質問票の記録を先に数える
+attend_screen <- function(fy, pre_yr) {
   s <- screen[[fy]]
-  cl$sf |>
-    filter(yr == pre_yr) |>
-    transmute(id, flag_sf8 = is.na(pcs) | is.na(mcs)) |>
-    left_join(select(s, -flag_sf8), by = "id") |>
-    mutate(flag_nochk = !id %in% s$id)
+  sf_pre <- cl$sf |> filter(yr == pre_yr)
+  tibble(id = union(s$id, cl$chk$id[cl$chk$exam_fy == substr(fy, 3, 6)])) |>
+    left_join(s, by = "id") |>
+    mutate(flag_noqx = !id %in% s$id,
+           flag_noresp = !id %in% sf_pre$id,
+           # 回答したが SF-8 が算出できない (期限後の回答を含む)。flag_sf8 は未回答も含むので分けておく
+           flag_sf8 = flag_sf8 & !flag_noresp)
 }
-screen_survey <- list(FY2020 = survey_screen("FY2020", 2020), FY2022 = survey_screen("FY2022", 2022),
-                      FY2023 = survey_screen("FY2023", 2022))
-for (fy in names(screen_survey)) {
-  s <- screen_survey[[fy]] |> filter(!flag_sf8, !flag_nochk)
-  stopifnot(!any(s$flag_age),
-            setequal(s$id, screen[[fy]] |> filter(!flag_age, !flag_sf8) |> pull(id)))
+screen_attend <- list(FY2020 = attend_screen("FY2020", 2020), FY2022 = attend_screen("FY2022", 2022),
+                      FY2023 = attend_screen("FY2023", 2022))
+# 組入基準を満たす人は、build_eligible() の対象者を絞る前の段階 (75 歳以上で SF-8 あり) と同じ人
+for (fy in names(screen_attend)) {
+  s <- screen_attend[[fy]] |> filter(!flag_noqx, !flag_age, !flag_noresp, !flag_sf8)
+  stopifnot(setequal(s$id, screen[[fy]] |> filter(!flag_age, !flag_sf8) |> pull(id)))
 }
 
 # ---- 5. 保存 ----
@@ -140,7 +143,7 @@ analysis_sets <- list(
   D = D, V = V, V6m = V6m, S4 = S4,
   flow = list(FY2020 = E20$flow, FY2022 = E22$flow, FY2023 = E23$flow,
               V = c(FY2022 = nrow(V22), FY2023 = nrow(V23)), V6m = nrow(V6m)),
-  screen = screen, screen_survey = screen_survey,
+  screen = screen, screen_attend = screen_attend,
   ids = list(V22 = V22$id, V23 = V23$id),
   outcome_counts = observed
 )

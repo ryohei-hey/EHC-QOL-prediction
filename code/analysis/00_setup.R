@@ -74,6 +74,12 @@ MODELS <- list(
   direct          = c("age", "sex", "pcs_pre", "mcs_pre"),             # HRQOL モデル (E5)
   checkup_direct  = c("age", "sex", ITEMS, CHECKUP_VARS, "pcs_pre", "mcs_pre")  # 健診 + 健診前 HRQOL (E7)
 )
+# E10 (統合モデルの上乗せを PCS と MCS に分ける) で加えるモデル。10_e10_pcs_mcs.R だけが使う
+# (MODELS に入れると 03・04 の全モデルの計算とキャッシュが変わるため、別に置く)
+MODELS_E10 <- list(
+  checkup_pcs     = c("age", "sex", ITEMS, CHECKUP_VARS, "pcs_pre"),   # 健診 + 健診前 PCS
+  checkup_mcs     = c("age", "sex", ITEMS, CHECKUP_VARS, "mcs_pre")    # 健診 + 健診前 MCS
+)
 
 # 解析するアウトカム: 領域 (PCS / MCS) × 時点 (約半年後 6m / 約 1 年半後 18m)
 OUTCOMES <- tidyr::expand_grid(domain = c("pcs", "mcs"), time = c("18m", "6m")) |>

@@ -11,6 +11,7 @@
 #        output/derived/calib_ext.rds    外部検証の較正曲線 (Figure 2 の破線)
 #        output/derived/pred_hist_ext.rds 予測確率の分布 (Figure 2 下部)
 #        output/derived/tbl2_highrisk.rds 高リスク者の抽出 (Table 2)
+#        output/derived/e4_delta.rds     抽出の感度・陽性的中率のモデル間の差 (E5・E7, eTable 10。post hoc)
 #        output/derived/roc_curves.rds   ROC 曲線の座標 (Figure 1・3。開発は見かけ、外部検証は V・V_6m)
 # 対応 : protocol §7.1・§7.3・§7.5 (E3, E4, E5–E9 の外部検証)・§7.7 S4・§7.13 (Figure 1–3, Table 2, eTable 4・eTable 7・eTable 8)
 # 時間 : 1 分程度 (E4 の bootstrap を含む)
@@ -219,11 +220,63 @@ for (dom in c("pcs", "mcs")) {
 tbl2 <- bind_rows(e4_rows)
 print(tbl2 |> filter(group == "all") |> select(outcome, model, frac, sensitivity, ppv, prevalence))
 
+# ---- 5b. 高リスク者の抽出のモデル間の差 (E5・E7, eTable 10) ----
+# プロトコルにない post hoc の比較 (2026-10-27 追加)。統合モデルの感度・陽性的中率と、
+# 差 (model1 − model2) を求める。抽出の定義は 5 と同じ。
+# 95% CI は 5 と同じ bootstrap 標本を使い、各標本で 3 つのモデルの閾値をそれぞれ計算し直して
+# 標本の中で差をとる (対応のある bootstrap のパーセンタイル法)。乱数は使わない
+E4_DELTA_PAIRS <- filter(DELTA_PAIRS, contrast %in% c("E5", "E7"))
+E4_DELTA_MODELS <- c("checkup", "direct", "checkup_direct")
+e4d_rows <- list()
+for (dom in c("pcs", "mcs")) {
+  yv <- paste0("y_", dom, "_18m")
+  y <- V[[yv]]
+  p_all <- map(set_names(E4_DELTA_MODELS), \(m) plogis(lp_of(V, yv, m)))
+  for (grp in c("all", "pre_not_low")) {
+    keep <- if (grp == "all") rep(TRUE, nrow(V)) else V[[paste0(dom, "_pre")]] >= LOW_QOL_CUTOFF
+    for (fr in E4_FRACS) {
+      # 行: sensitivity・ppv、列: モデル
+      stats_of <- \(ix) vapply(p_all, \(p) highrisk_stats(p[ix], y[ix], fr)[c("sensitivity", "ppv")], numeric(2))
+      est <- stats_of(which(keep))
+      bs <- lapply(boot_idx, \(ix) stats_of(ix[keep[ix]]))
+      ci <- \(v) quantile(v, c(0.025, 0.975), na.rm = TRUE)
+      for (ms in c("sensitivity", "ppv")) {
+        b_m <- ci(map_dbl(bs, \(b) b[ms, "checkup_direct"]))
+        e4d_rows[[length(e4d_rows) + 1]] <- tibble(
+          outcome = yv, group = grp, frac = fr, measure = ms, kind = "model", contrast = NA_character_,
+          model1 = "checkup_direct", model2 = NA_character_,
+          estimate = est[ms, "checkup_direct"], lo = b_m[[1]], hi = b_m[[2]], n_boot = N_BOOT_E4)
+        for (i in seq_len(nrow(E4_DELTA_PAIRS))) {
+          m1 <- E4_DELTA_PAIRS$model1[i]; m2 <- E4_DELTA_PAIRS$model2[i]
+          b_d <- ci(map_dbl(bs, \(b) b[ms, m1] - b[ms, m2]))
+          e4d_rows[[length(e4d_rows) + 1]] <- tibble(
+            outcome = yv, group = grp, frac = fr, measure = ms, kind = "delta",
+            contrast = E4_DELTA_PAIRS$contrast[i], model1 = m1, model2 = m2,
+            estimate = est[ms, m1] - est[ms, m2], lo = b_d[[1]], hi = b_d[[2]], n_boot = N_BOOT_E4)
+        }
+      }
+    }
+  }
+}
+e4_delta <- bind_rows(e4d_rows)
+# 健診ベース・HRQOL ベースモデルの値が 5 (Table 2) と一致すること
+local({
+  chk <- e4_delta |> filter(kind == "delta") |>
+    inner_join(tbl2 |> select(outcome, group, frac, model, sensitivity, ppv) |>
+                 pivot_longer(c(sensitivity, ppv), names_to = "measure", values_to = "v") |>
+                 pivot_wider(names_from = model, values_from = v),
+               by = c("outcome", "group", "frac", "measure")) |>
+    filter(contrast == "E5")
+  stopifnot(nrow(chk) == 24, isTRUE(all.equal(chk$estimate, chk$direct - chk$checkup)))
+})
+print(e4_delta |> filter(group == "all") |> select(outcome, frac, measure, kind, contrast, estimate, lo, hi))
+
 # ---- 6. 保存 ----
 save_derived(list(perf = perf, delta = delta, comp = comp_ext, comp_delta = comp_delta_ext,
                   comp_k = comp_k, comp_cal = comp_cal_ext, comp_calib = comp_calib_ext), "perf_ext")
 save_derived(bind_rows(calib), "calib_ext")
 save_derived(bind_rows(pred_hist), "pred_hist_ext")
 save_derived(tbl2, "tbl2_highrisk")
+save_derived(e4_delta, "e4_delta")
 save_derived(roc_curves, "roc_curves")
 message("04 完了")

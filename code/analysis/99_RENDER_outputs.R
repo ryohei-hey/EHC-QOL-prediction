@@ -5,7 +5,7 @@
 #        ここでは計算をしない (見た目を変えるだけなら、このファイルだけを実行し直せばよい)。
 # 入力 : output/derived/*.rds
 # 出力 : output/figures/  Figure 1–3, eFigure 1–4 (PNG と PDF)
-#        output/tables/   Table 1–2, eTable 1–10 (Word と、同じ表の本体の csv)、software.csv (R とパッケージの版)
+#        output/tables/   Table 1–2, eTable 1–12 (Word と、同じ表の本体の csv)、software.csv (R とパッケージの版)
 #        output/figures/Figure1_footnote.txt, Figure3_footnote.txt, output/tables/Table2_footnote.txt
 #                                       脚注に入れる数値 (IPW の値・イベントの内訳など)
 #        output/tables/eMethods6_values.txt  eMethods 6 の本文に書く感度分析 S1・S5 の値
@@ -113,11 +113,28 @@ save_efig <- function(p, name, height_mm, width_mm = STYLE$efig_width) {
   save_fig(p, name, height_mm, width_mm)
   write_emf(name, width_mm, height_mm, \() print(p))
 }
+# AMA Manual of Style: 表の中に負の値を含む範囲 ("−0.05 to 0.30") が 1 つでもあれば、その表の範囲は
+# 負の値がなくてもすべて "to" で書く (AMA Style Insider, 2013-10-08)。本文は範囲ごとに書き分ける (jama_range)。
+# 表の本体のセルだけを書き換える (見出し・脚注は変えない)。上付きの記号などの書式は残す
+AMA_NUM <- "[0-9]+(?:\\.[0-9]+)?%?"
+ama_ranges_to <- function(ft) {
+  chunks <- ft$body$content$data
+  txt_all <- unlist(lapply(chunks, `[[`, "txt"))
+  if (!any(grepl(sprintf("\\(−?%s to −?%s\\)", AMA_NUM, AMA_NUM), txt_all, perl = TRUE))) return(ft)
+  to_to <- \(x) gsub(sprintf("\\((%s)-(%s)\\)", AMA_NUM, AMA_NUM), "(\\1 to \\2)", x, perl = TRUE)
+  for (k in seq_along(chunks)) chunks[[k]]$txt <- to_to(chunks[[k]]$txt)
+  ft$body$content$data <- chunks
+  # csv (save_tables) は dataset から書くので、表に出る文字列とそろえる
+  chr <- vapply(ft$body$dataset, is.character, logical(1))
+  ft$body$dataset[chr] <- lapply(ft$body$dataset[chr], to_to)
+  ft
+}
 save_tables <- function(tabs, name, landscape = FALSE, widths = NULL) {
   # widths (インチ) を渡すと、自動の列幅の代わりにその幅を使う (CI の折り返しを防ぎたい表で使う)
   # 複数の表を 1 つの Word ファイルに順に書き出す
   doc <- read_docx()
   for (i in seq_along(tabs)) {
+    tabs[[i]] <- ama_ranges_to(tabs[[i]])   # 列幅を決める前に置き換える ("to" のほうが長い)
     # 表題は太字の本文段落にする (officer 既定の "heading 2" には "1.1" の自動番号がつくため使わない)
     if (!is.null(names(tabs)[i]) && nzchar(names(tabs)[i]))
       doc <- body_add_fpar(doc, fpar(ftext(names(tabs)[i], fp_text(bold = TRUE, font.size = 11, font.family = "Arial"))))
@@ -147,6 +164,7 @@ local({
                          file.path(DIR_TABLES, "software.csv"))
 })
 # JAMA 形式 (AMA Manual of Style): 範囲はハイフン "0.74-0.80"。下限か上限が負のときは "−0.05 to 0.30"
+# (en dash は使わない)。表では、負の値を含む範囲がある表の範囲をすべて "to" にする (ama_ranges_to)
 jama_range <- function(lo, hi, fmt) {
   ifelse(lo < 0 | hi < 0, paste(sprintf(fmt, lo), "to", sprintf(fmt, hi)),
          paste0(sprintf(fmt, lo), "-", sprintf(fmt, hi)))
@@ -237,6 +255,19 @@ sup_header <- function(ft, j, label, mark = "a") {
 sup_footer <- function(ft, i, text = ft$footer$dataset[[1]][i], mark = "a") {
   compose(ft, i = i, j = 1, part = "footer", value = as_paragraph(as_sup(mark), text))
 }
+# 式の指数 "^x" (x は次の空白・カンマ・閉じ括弧の前まで) を上付きの x にして書き直す。
+# mark を渡すと脚注記号を先頭に付ける (sup_footer と同じ)
+sup_powers <- function(ft, i, j, part = "body", mark = NULL) {
+  txt <- ft[[part]]$dataset[[j]][i]
+  m <- gregexpr("\\^[^ ,)]+", txt)
+  base <- regmatches(txt, m, invert = TRUE)[[1]]
+  pows <- sub("^\\^", "", regmatches(txt, m)[[1]])
+  stopifnot(length(pows) > 0)
+  chunks <- list(base[1])
+  for (k in seq_along(pows)) chunks <- c(chunks, list(as_sup(pows[k]), base[k + 1]))
+  if (!is.null(mark)) chunks <- c(list(as_sup(mark)), chunks)
+  compose(ft, i = i, j = j, part = part, value = do.call(as_paragraph, chunks))
+}
 write_footnote <- function(lines, name, dir = DIR_FIGURES) {
   writeLines(lines, file.path(dir, paste0(name, "_footnote.txt")), useBytes = TRUE)
 }
@@ -301,9 +332,15 @@ summary_flextable <- function(out) {
                        PRE_SF8_NOTE)) |>
     fontsize(size = 8, part = "all") |> font(fontname = "Arial", part = "all")
 }
-make_summary_table <- function(body, n, stat_cols, header_names) {
+# extra: 表の最後に足す区分 (list(section = 見出し, rows = label と stat_cols の列を持つ表))
+make_summary_table <- function(body, n, stat_cols, header_names, extra = NULL) {
   out <- summary_rows(body, stat_cols)
   sec_i <- attr(out, "section_i")
+  if (!is.null(extra)) {
+    sec_i <- c(sec_i, nrow(out) + 1)
+    out <- bind_rows(out, tibble(label = extra$section), select(extra$rows, label, all_of(stat_cols))) |>
+      mutate(across(everything(), \(x) replace_na(x, "")))
+  }
   names(out) <- c("Characteristic", paste0(header_names, "\n(n = ", jama_int(n), ")"))
   attr(out, "section_i") <- sec_i
   # JAMA 形式: 値は No. (%) が既定 (連続変数は行ラベルに median (IQR) と書く)
@@ -313,10 +350,26 @@ make_summary_table <- function(body, n, stat_cols, header_names) {
     fontsize(size = 8, part = "all") |> font(fontname = "Arial", part = "all")
 }
 tbl1 <- read_derived("tbl1")
-save_tables(list(`Table 1. Characteristics of the development and temporal validation cohorts` =
-                   make_summary_table(tbl1$body, tbl1$n, c("stat_0", "stat_1", "stat_2"),
-                                      c("Overall", "Development", "Temporal validation"))),
-            "Table1")
+# 約 1 年半後のアウトカムの区分 (2026-10-18 追加。本文 Results の結果確定・イベントの人数を表でも示す)
+T1_OUTCOME_LABELS <- c(
+  known = "Outcome known",
+  pcs = "PCS composite (primary outcome)", pcs_low = "    PCS score <40", pcs_ltc3 = "    Care-need level ≥3",
+  pcs_death = "    Death",
+  mcs = "MCS composite (secondary outcome)", mcs_low = "    MCS score <40", mcs_ltc3 = "    Care-need level ≥3",
+  mcs_death = "    Death")
+stopifnot(setequal(names(T1_OUTCOME_LABELS), tbl1$outcome$key))
+t1_outcome <- tbl1$outcome |> mutate(label = unname(T1_OUTCOME_LABELS[key]))
+T1_OUTCOME_SECTION <- "Outcome at ≈18 months"
+ft1 <- make_summary_table(tbl1$body, tbl1$n, c("stat_0", "stat_1", "stat_2"),
+                          c("Overall", "Development", "Temporal validation"),
+                          extra = list(section = T1_OUTCOME_SECTION, rows = t1_outcome)) |>
+  add_footer_lines(c(
+    paste0(T1_OUTCOME_SECTION, ": percentages for outcome known are of all participants in the column; percentages for the outcomes ",
+           "and their components are of participants with known outcomes. Components were classified hierarchically ",
+           "(score <40, then care-need level ≥3, then death)."),
+    OUTCOME_NOTE, time_note("18m"))) |>
+  fontsize(size = 8, part = "all") |> font(fontname = "Arial", part = "all")
+save_tables(list(`Table 1. Characteristics of the development and temporal validation cohorts` = ft1), "Table1")
 
 # =============================================================================
 # Figure 1. 健診モデルの判別能 (約 1 年半後)
@@ -473,7 +526,7 @@ t2_model_hdr <- list(sens = "Sensitivity, %\n(95% CI)", max = "Maximum sensitivi
                      ppv = "PPV, %\n(95% CI)", missing = "Selected with\noutcome unknown, No.")
 # 列見出しへの注 (上付き a: 抽出の定義、b: 最大感度)
 T2_NOTE_A <- "Participants in the top 10%, 20%, or 30% of predicted risk among all eligible participants in the population, regardless of whether the outcome was known; ties at the threshold were all included."
-T2_NOTE_B <- "Sensitivity if every selected participant with a known outcome had the outcome (selected participants with known outcomes divided by participants with the outcome, capped at 100%); it differs by model because the selected participants differ."
+T2_NOTE_B <- "The highest sensitivity possible for the number selected, ie, if every selected participant with a known outcome had the outcome (selected participants with known outcomes divided by participants with the outcome, up to 100%). It differs between models because the number of selected participants with unknown outcomes differs."
 ft2 <- flextable(tbl2_out) |>
   set_header_labels(values = c(
     list(Top = "Selected as high risk"),
@@ -488,6 +541,7 @@ ft2 <- flextable(tbl2_out) |>
     abbrev_note("HRQOL", "MCS", "PCS", "PPV"),
     "Sensitivity: proportion of participants with the outcome who were selected. PPV: proportion of selected participants who had the outcome. Both were estimated among participants with known outcomes; 95% CIs: bootstrap percentile (stratified by fiscal year; threshold recomputed in each sample).",
     "Outcome, %: proportion with the outcome among participants with known outcomes (the PPV expected with random selection).",
+    "Checkup-based model: checkup questionnaire items, checkup measurements, age, and sex. HRQOL-based model (exploratory analysis): pre-checkup PCS and MCS scores, age, and sex.",
     "Pre-checkup score ≥40: PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup.",
     OUTCOME_NOTE, time_note("18m"),
     T2_NOTE_A,
@@ -513,7 +567,7 @@ write_footnote(pmap_chr(s1e4, \(model, group, frac, measure, estimate, lo, hi, o
 # 2026-09-29 変更: 以前はモデル比較の ROC 曲線 (E5–E7、約半年後・約 1 年半後) だった。
 # Key message (健診データは要介護・死亡を捉えるが、低い HRQOL の判別は HRQOL を加えると上がる) に
 # 直接対応する、構成要素ごとの AUC と ΔAUC (統合 − 健診, E7) のフォレストプロットに差し替えた。
-# モデル比較の AUC・ΔAUC は eTable 4・eTable 9 に、構成要素ごとの値は eTable 10 にある
+# モデル比較の AUC・ΔAUC は eTable 4・eTable 9 に、構成要素ごとの値は eTable 11 にある
 fig3_models <- c("checkup", "direct", "checkup_direct")
 FIG3_COMPONENTS <- c(composite = "Composite outcome", low_hrqol = "(a) Poor HRQOL among survivors",
                      ltc3_death = "(b) Care-need level ≥3 or death")
@@ -550,9 +604,9 @@ fig3_left <- ggplot(fig3_auc, aes(estimate, y, colour = model)) +
 d3_rng <- range(c(fig3_delta$lo, fig3_delta$hi, 0))
 fig3_right <- ggplot(fig3_delta, aes(estimate, y)) +
   geom_vline(xintercept = 0, colour = "grey50", linewidth = 0.3) +
-  geom_errorbar(aes(xmin = lo, xmax = hi), width = 0.12, orientation = "y",
-                colour = STYLE$model_colors[["checkup_direct"]]) +
-  geom_point(size = 1.6, colour = STYLE$model_colors[["checkup_direct"]]) +
+  # 差はどのモデルの値でもないので、モデルの色を使わず黒の菱形で描く
+  geom_errorbar(aes(xmin = lo, xmax = hi), width = 0.12, orientation = "y", colour = "black") +
+  geom_point(size = 2.4, shape = 18, colour = "black") +
   facet_grid(domain ~ .) +
   scale_x_continuous(limits = d3_rng + c(-0.01, 0.01),
                      labels = scales::label_number(accuracy = 0.01, style_negative = "minus")) + fig3_y +
@@ -591,6 +645,9 @@ ft_e1 <- flextable(etbl1 |> rename(Domain = domain, Predictor = predictor,
   add_footer_lines(c("Ref, reference category (for questionnaire items, the lowest-risk response). Predictors were standardized before penalization in ridge regression.",
                      "QMCOO wording follows the official English version (eMethods 1); the Japanese wording is that of the Ministry of Health, Labour and Welfare questionnaire. Total: 39 parameters.",
                      LAB_ABBREV_E1, SI_NOTE)) |>
+  # eGFR の式の指数を上付きにする
+  (\(ft) { i <- grep("^", etbl1$wording, fixed = TRUE); stopifnot(length(i) == 1)
+           sup_powers(ft, i, "Question wording or measurement") })() |>
   fontsize(size = 7.5, part = "all") |> font(fontname = "Arial", part = "all")
 save_tables(list(`eTable 1. Definition of predictors` = ft_e1), "eTable1", landscape = TRUE)
 
@@ -778,6 +835,7 @@ ft_e4 <- flextable(delta_rows) |>
   hline(i = which(head(delta_rows$Outcome, -1) != tail(delta_rows$Outcome, -1)), border = thin_rule) |>
   add_footer_lines(c(
     "Values are ΔAUC (95% CI). ΔAUC >0 indicates a higher AUC for the first-named model. Temporal validation 95% CIs are paired DeLong intervals.",
+    "Combined − HRQOL-based (reference): shown for reference, as the information that checkup data add to pre-checkup HRQOL; not one of the comparisons described in the main text.",
     LS_CI_NOTE,
     "Pre-checkup score ≥40: participants with a PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup (the population also shown in Table 2).",
     "—, not applicable.",
@@ -822,7 +880,7 @@ ft_e5 <- flextable(e4dev) |>
 # 文字の大きさと書体は、脚注・見出し行を足したあとに最後にかける (先にかけると足した行が既定の 11 pt になる)
 tf <- \(ft) ft |> fontsize(size = 7, part = "all") |> font(fontname = "Arial", part = "all")
 # 感度分析 S1・S5 の値を照合用のテキストファイルにまとめる (output/tables/eMethods6_values.txt)。
-# S1 の詳細は eTable 7 に示す (2026-10-10 変更。以前は eMethods の本文)
+# S1 の詳細は eTable 8 に示す (2026-10-10 変更。以前は eMethods の本文)
 # S1 (IPW): 固定した最終モデルの、重みなし (結果確定者、見かけ) と重みつきの AUC・較正 (§7.7 S1)
 s1_rows <- bind_rows(sens$s1_dev, sens$s1_ext) |>
   filter(str_detect(quantity, "^(unw|ipw)\\.(auc|slope|citl)$")) |>
@@ -847,7 +905,7 @@ s5_rows <- bind_rows(
                             sprintf("%.2f", shrinkage), "): ", fmt_ci(estimate, lo, hi)))
 )
 writeLines(c(s1_rows$line, s5_rows$line), file.path(DIR_TABLES, "eMethods6_values.txt"), useBytes = TRUE)
-save_tables(list(`eTable 4. Discrimination and calibration` = tf(ft_e3)),
+save_tables(list(`eTable 4. Discrimination and calibration of the checkup-based, questionnaire-based, HRQOL-based, and combined models` = tf(ft_e3)),
             "eTable4", landscape = TRUE, widths = c(0.8, 0.8, 1.5, 0.95, 0.95, 1.0, 0.55, 1.05, 0.55, 0.9))
 save_tables(list(`eTable 9. Differences in AUC between models (ΔAUC, 95% CI)` = tf(ft_e4)),
             "eTable9", landscape = TRUE, widths = c(1.0, 1.6, 1.15, rep(1.1, 5)))
@@ -855,7 +913,7 @@ save_tables(list(`eTable 6. Identification of high-risk participants in the deve
             "eTable6")
 
 # =============================================================================
-# eTable 7. 感度分析 S1 (IPW) の詳細
+# eTable 8. 感度分析 S1 (IPW) の詳細
 # =============================================================================
 # 2026-10-10 変更: 以前は eMethods の本文に書いていた (2026-09-23 決定) が、eMethods を簡潔にするため表に移した。
 # 表 1: 固定した最終モデルの、重みなし (結果確定者、見かけ) と重みつきの AUC・較正 (開発と外部検証)
@@ -900,14 +958,14 @@ ft_s1_sel <- flextable(s1_sel) |>
   hline(i = seq(3, nrow(s1_sel) - 1, by = 3), border = thin_rule) |>
   add_footer_lines(c(
     "Temporal validation cohort. Selection as high risk as in Table 2 (top 10%, 20%, or 30% of predicted risk among all eligible participants in the population); unweighted values are shown in Table 2.",
-    "Sensitivity and PPV were weighted as above. 95% CIs: bootstrap percentile intervals from 1000 samples stratified by fiscal year.",
+    "Sensitivity and PPV were weighted as in eTable 8A. 95% CIs: bootstrap percentile intervals from 1000 samples stratified by fiscal year.",
     "Pre-checkup score ≥40: PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup.",
     "Abbreviations: HRQOL, health-related quality of life; MCS, mental component summary; PCS, physical component summary; PPV, positive predictive value.",
     OUTCOME_NOTE, time_note("18m")
   ))
-save_tables(list(`eTable 7A. Discrimination and calibration with inverse probability weighting (sensitivity analysis S1)` = tf(ft_s1),
-                 `eTable 7B. Identification of high-risk participants with inverse probability weighting in temporal validation` = tf(ft_s1_sel)),
-            "eTable7", landscape = TRUE)
+save_tables(list(`eTable 8A. Discrimination and calibration with inverse probability weighting (sensitivity analysis S1)` = tf(ft_s1),
+                 `eTable 8B. Identification of high-risk participants with inverse probability weighting in temporal validation` = tf(ft_s1_sel)),
+            "eTable8", landscape = TRUE)
 
 # =============================================================================
 # eTable 2. 結果が確定した人と結果不明の人の比較
@@ -935,7 +993,7 @@ save_tables(list(`eTable 2. Participants with known and unknown outcomes (PCS co
             "eTable2")
 
 # =============================================================================
-# eTable 10. 複合アウトカムの構成要素ごとの判別能 (E9, §7.5)
+# eTable 11. 複合アウトカムの構成要素ごとの判別能 (E9, §7.5)
 # =============================================================================
 # 約 1 年半後の PCS 複合・MCS 複合で推定したモデル (健診・健診前 HRQOL・統合) の AUC と ΔAUC を、
 # 複合アウトカム (参考) と、2 つの構成要素 ((a) 低い HRQOL、(b) 要介護 3 以上・死亡) ごとに示す。
@@ -1005,7 +1063,8 @@ stopifnot(nrow(e9_body) == 2 * 3 * (length(E9_MODELS) + length(E9_CONTRASTS)))
 ft_e7 <- flextable(e9_body) |>
   set_header_labels(Outcome = "Model fitted for", Component = "Outcome evaluated", Model = "Model or contrast",
                     Development = "Development\n(optimism-corrected)", Validation = "Temporal validation",
-                    citl_u = "Unadjusted", citl_a = "Converted", slope_u = "Unadjusted", slope_a = "Converted") |>
+                    citl_u = "Before\nconversion", citl_a = "After\nconversion",
+                    slope_u = "Before\nconversion", slope_a = "After\nconversion") |>
   add_header_row(values = c("", "AUC or ΔAUC", "Calibration-in-the-large\n(temporal validation)",
                             "Calibration slope\n(temporal validation)"), colwidths = c(3, 2, 2, 2)) |>
   align(i = 1, align = "center", part = "header") |>
@@ -1018,23 +1077,145 @@ ft_e7 <- flextable(e9_body) |>
     LS_CI_NOTE,
     "Components were evaluated among participants with a known composite outcome. (a) Participants who had neither reached care-need level ≥3 nor died by March 31 of the outcome survey year and had an SF-8 score; the outcome was a score <40. This evaluation is conditional on survival, not reaching care-need level ≥3, and responding to the survey. (b) All participants with a known composite outcome; the outcome was care-need level ≥3 or death by March 31 of the outcome survey year.",
     "In component (a), the HRQOL-based and combined models share the SF-8 measurement with the outcome, which may favor these models.",
-    "Temporal validation includes participants from both the FY2022 and FY2023 checkups. For the composite outcome, calibration is that of the final models. For the components, unadjusted calibration uses the predicted risk of the composite outcome as it is.",
+    "Temporal validation includes participants from both the FY2022 and FY2023 checkups. For the composite outcome, calibration is that of the final models. For the components, calibration before conversion uses the predicted risk of the composite outcome as it is.",
     "Predicted risks converted to component-specific risks by the method of Gondrie et al (eMethods 13): risk = 1 − (1 − p)^k, where p is the predicted risk of the composite outcome and k is the incidence of the component divided by the incidence of the composite outcome among all participants with a known composite outcome in the development cohort (components counted whenever they occurred). The original method multiplies the baseline cumulative hazard of a Cox model by k; applying it to a logistic model is an approximation. Because converted risks refer to all participants, calibration for component (a) was assessed among all participants with a known composite outcome (outcome: SF-8 score <40; participants who reached care-need level ≥3 or died without such a score were counted as nonevents), whereas the AUC for (a) was assessed in the conditional population described above. Conversion does not change the AUC. Calibration was not assessed in the development cohort because k was estimated there.",
     "Calibration slope <1 indicates predictions that are too extreme, >1 predictions that are too moderate; calibration-in-the-large >0 indicates that risk was underestimated on average. —, not applicable.",
     abbrev_note("AUC", "ΔAUC", "FY", "HRQOL", "MCS", "PCS", "SF-8"),
     OUTCOME_NOTE, time_note("18m")
   )) |>
   fontsize(size = 7, part = "all") |> font(fontname = "Arial", part = "all") |>
-  sup_header("citl_a", "Converted") |> sup_header("slope_a", "Converted") |>
-  # 脚注 a (Converted の定義) は行番号ではなく本文で探す (脚注の行が増減してもずれないように)
+  sup_header("citl_a", "After\nconversion") |> sup_header("slope_a", "After\nconversion") |>
+  # 脚注 a (換算の定義) は行番号ではなく本文で探す (脚注の行が増減してもずれないように)。
+  # 式の指数 k も上付きにする
   (\(ft) { i <- grep("^Predicted risks converted", ft$footer$dataset[[1]]); stopifnot(length(i) == 1)
-           sup_footer(ft, i) })() |>
+           sup_powers(ft, i, 1, part = "footer", mark = "a") })() |>
   fontsize(size = 7, part = "all") |> font(fontname = "Arial", part = "all")
-save_tables(list(`eTable 10. Discrimination and calibration for each component of the composite outcome (≈18 months)` = ft_e7),
-            "eTable10", landscape = TRUE, widths = c(0.75, 1.45, 1.3, 1.0, 1.0, 0.95, 0.95, 0.95, 0.95))
+save_tables(list(`eTable 11. Discrimination and calibration for each component of the composite outcome (≈18 months)` = ft_e7),
+            "eTable11", landscape = TRUE, widths = c(0.75, 1.45, 1.3, 1.0, 1.0, 0.95, 0.95, 0.95, 0.95))
 
 # =============================================================================
-# eTable 8. 性別ごとの主たる結果 (外部検証、約 1 年半後。08_by_sex.R)
+# eTable 12. 健診前 PCS と MCS の上乗せ (E10, §7.5。10_e10_pcs_mcs.R)
+# =============================================================================
+# 健診ベースモデルに健診前の PCS だけ・MCS だけを加えたモデルの AUC と ΔAUC を、複合アウトカムと
+# 構成要素ごとに示す。健診ベースモデルと統合モデルの AUC は eTable 11 にある
+e10 <- read_derived("e10_pcs_mcs")
+E10_LABELS <- c(checkup_pcs = "Checkup + PCS model", checkup_mcs = "Checkup + MCS model",
+                E10_pcs = "ΔAUC, checkup + PCS − checkup-based", E10_mcs = "ΔAUC, checkup + MCS − checkup-based",
+                E10_mcs_given_pcs = "ΔAUC, combined − checkup + PCS", E10_pcs_given_mcs = "ΔAUC, combined − checkup + MCS")
+E10_COLS <- c(dev = "dev", V = "val", V_FY2022 = "fy22", V_FY2023 = "fy23")
+e10_cells <- bind_rows(
+  e10$perf_dev |> filter(stat == "auc", model %in% names(E10_LABELS)) |>
+    transmute(outcome, component = "composite", row = model, col = "dev", value = fmt_ci(corrected, lo, hi), n, events),
+  e10$comp_dev |> filter(model %in% names(E10_LABELS)) |>
+    transmute(outcome, component, row = model, col = "dev", value = fmt_ci(corrected, lo, hi), n, events),
+  e10$perf_ext |> filter(stat == "auc", model %in% names(E10_LABELS)) |>
+    transmute(outcome, component = "composite", row = model, col = E10_COLS[set], value = fmt_ci(estimate, lo, hi), n, events),
+  e10$comp_ext |> filter(model %in% names(E10_LABELS)) |>
+    transmute(outcome, component, row = model, col = "val", value = fmt_ci(estimate, lo, hi), n, events),
+  e10$delta_dev |> filter(contrast %in% names(E10_LABELS)) |>
+    transmute(outcome, component = "composite", row = contrast, col = "dev", value = fmt_ci(corrected, lo, hi, 3)),
+  e10$comp_delta_dev |> filter(contrast %in% names(E10_LABELS)) |>
+    transmute(outcome, component, row = contrast, col = "dev", value = fmt_ci(corrected, lo, hi, 3)),
+  e10$delta_ext |> filter(contrast %in% names(E10_LABELS)) |>
+    transmute(outcome, component = "composite", row = contrast, col = E10_COLS[set], value = fmt_ci(estimate, lo, hi, 3)),
+  e10$comp_delta_ext |> filter(contrast %in% names(E10_LABELS)) |>
+    transmute(outcome, component, row = contrast, col = "val", value = fmt_ci(estimate, lo, hi, 3))
+)
+# 対象の人数とイベント数 (開発と外部検証 [年度を統合])。モデルによらないので、構成要素のセルに書く
+e10_n <- e10_cells |> filter(!is.na(n), col %in% c("dev", "val")) |> distinct(outcome, component, col, n, events)
+stopifnot(!anyDuplicated(select(e10_n, outcome, component, col)))
+e10_n <- e10_n |>
+  mutate(txt = sprintf("%s n = %s (%s events)", if_else(col == "dev", "Development", "Validation"),
+                       jama_int(n), jama_int(events))) |>
+  group_by(outcome, component) |>
+  summarise(n_txt = paste(txt[order(col)], collapse = "\n"), .groups = "drop")
+e10_body <- e10_cells |>
+  select(-n, -events) |>
+  pivot_wider(names_from = col, values_from = value) |>
+  left_join(e10_n, by = c("outcome", "component")) |>
+  arrange(match(DOMAIN_OF(outcome), c("pcs", "mcs")),
+          match(component, c("composite", "low_hrqol", "ltc3_death")), match(row, names(E10_LABELS))) |>
+  transmute(Outcome = paste0("Models for the ", OUTCOME_LABELS[DOMAIN_OF(outcome)]),
+            Component = paste0(e9_comp_label(component, DOMAIN_OF(outcome)), "\n", n_txt),
+            Model = E10_LABELS[row], Development = dev, Validation = val, FY2022 = fy22, FY2023 = fy23) |>
+  mutate(across(everything(), \(x) fix_minus(replace_na(x, "—"))))
+stopifnot(nrow(e10_body) == 2 * 3 * length(E10_LABELS))
+ft_e10 <- flextable(e10_body) |>
+  set_header_labels(Outcome = "Model fitted for", Component = "Outcome evaluated", Model = "Model or contrast",
+                    Development = "Development\n(optimism-corrected)", Validation = "FY2022 and FY2023\ncombined",
+                    FY2022 = "FY2022 checkup only", FY2023 = "FY2023 checkup only") |>
+  add_header_row(values = c("", "AUC or ΔAUC", "Temporal validation"), colwidths = c(3, 1, 3)) |>
+  align(i = 1, align = "center", part = "header") |>
+  merge_v(j = c("Outcome", "Component")) |> valign(j = 1:2, valign = "top", part = "body") |>
+  align(j = 4:7, align = "center", part = "all") |>
+  hline(i = seq(length(E10_LABELS), nrow(e10_body) - 1, by = length(E10_LABELS)), border = thin_rule) |>
+  add_footer_lines(c(
+    "Values are AUC or ΔAUC (95% CI). ΔAUC >0 indicates a higher AUC for the first-named model. The checkup + PCS and checkup + MCS models added the pre-checkup PCS or MCS score, respectively, to the predictors of the checkup-based model. AUCs of the checkup-based and combined models are shown in eTable 11.",
+    "Models were fitted for the composite outcome at ≈18 months (poor HRQOL, care-need level ≥3, or death) and were not refitted for each component. Development values are optimism-corrected using the same bootstrap samples for all models (location-shifted 95% CI); temporal validation values are for the final models (DeLong 95% CI; paired DeLong for ΔAUC). Components were evaluated in the combined temporal validation cohort only.",
+    LS_CI_NOTE,
+    "Components were evaluated among participants with a known composite outcome. (a) Participants who had neither reached care-need level ≥3 nor died by March 31 of the outcome survey year and had an SF-8 score; the outcome was a score <40. This evaluation is conditional on survival, not reaching care-need level ≥3, and responding to the survey. (b) All participants with a known composite outcome; the outcome was care-need level ≥3 or death by March 31 of the outcome survey year.",
+    "Adding the score of the same domain as the outcome (PCS for the PCS composite, MCS for the MCS composite) shares the SF-8 measurement with the outcome, which may favor that model. In the FY2023 checkup cohort, the pre-checkup SF-8 score was from 1 year earlier than in the other cohorts (eMethods 2). —, not estimated.",
+    abbrev_note("AUC", "ΔAUC", "FY", "HRQOL", "MCS", "PCS", "SF-8"),
+    OUTCOME_NOTE, time_note("18m")
+  )) |>
+  fontsize(size = 7, part = "all") |> font(fontname = "Arial", part = "all")
+save_tables(list(`eTable 12. Discrimination after adding the pre-checkup PCS or MCS score to the checkup-based model (≈18 months)` = ft_e10),
+            "eTable12", landscape = TRUE, widths = c(0.85, 1.75, 1.85, 1.15, 1.15, 1.15, 1.15))
+
+# =============================================================================
+# eTable 10. 高リスク者の抽出のモデル間の差 (E5・E7。04 の 5b、post hoc)
+# =============================================================================
+# 統合モデルの感度・陽性的中率と、E5・E7 の差 (パーセントポイント)。健診ベース・HRQOL ベースモデルの値は Table 2。
+# 本文の Results で引用する (2026-10-27)。post hoc であることは eMethods 9 に書く
+e4_delta <- read_derived("e4_delta")
+# 対象集団の人数と結果の割合は Table 2 と同じ書き方にする (モデルによらない)
+e12_pop <- tbl2 |> filter(model == "checkup") |>
+  transmute(outcome, group, frac,
+            Population = sprintf("%s\nn = %s\n(outcome unknown, %s)\nOutcome, %.1f%%",
+                                 if_else(group == "all", "All eligible", "Pre-checkup score ≥40"),
+                                 jama_int(n_sel + n_unsel), jama_int(n_sel_unknown + n_unsel_unknown), 100 * prevalence),
+            Top = sprintf("Top %d%%\n(n = %s)", round(100 * frac), jama_int(n_sel)))
+e12_body <- e4_delta |>
+  mutate(col = paste(if_else(kind == "model", model1, contrast), measure, sep = "_"),
+         value = fmt_ci(100 * estimate, 100 * lo, 100 * hi, 1)) |>
+  select(outcome, group, frac, col, value) |>
+  pivot_wider(names_from = col, values_from = value) |>
+  left_join(e12_pop, by = c("outcome", "group", "frac")) |>
+  arrange(match(DOMAIN_OF(outcome), c("pcs", "mcs")), match(group, c("all", "pre_not_low")), frac) |>
+  transmute(Outcome = OUTCOME_LABELS[DOMAIN_OF(outcome)], Population, Top,
+            checkup_direct_sensitivity, checkup_direct_ppv, E5_sensitivity, E5_ppv, E7_sensitivity, E7_ppv) |>
+  mutate(across(everything(), fix_minus))
+stopifnot(nrow(e12_body) == 12, !anyNA(e12_body))
+E12_NOTE_A <- T2_NOTE_A
+ft_e12 <- flextable(e12_body) |>
+  set_header_labels(Top = "Selected as high risk",
+                    checkup_direct_sensitivity = "Sensitivity, %\n(95% CI)", checkup_direct_ppv = "PPV, %\n(95% CI)",
+                    E5_sensitivity = "Δ Sensitivity\n(95% CI)", E5_ppv = "Δ PPV\n(95% CI)",
+                    E7_sensitivity = "Δ Sensitivity\n(95% CI)", E7_ppv = "Δ PPV\n(95% CI)") |>
+  add_header_row(values = c("", MODEL_LABELS[["checkup_direct"]], "HRQOL-based − checkup-based",
+                            "Combined − checkup-based"), colwidths = c(3, 2, 2, 2)) |>
+  merge_v(j = c("Outcome", "Population")) |> valign(j = 1:2, valign = "top", part = "body") |>
+  align(j = 3:9, align = "center", part = "all") |> align(i = 1, align = "center", part = "header") |>
+  hline(i = seq(3, nrow(e12_body) - 1, by = 3), border = thin_rule) |>
+  add_footer_lines(c(
+    abbrev_note("HRQOL", "MCS", "PCS", "PPV"),
+    "Temporal validation cohort. Sensitivity and PPV of the checkup-based and HRQOL-based models are shown in Table 2. Δ: difference between models (first-named minus second-named model), in percentage points.",
+    sprintf("Sensitivity and PPV were calculated among participants with known outcomes. 95%% CIs: bootstrap percentile intervals from %d samples stratified by fiscal year (the same samples as in Table 2); in each sample, the selection threshold was recomputed for each model and the difference was calculated within the sample.", e4_delta$n_boot[1]),
+    "Because the number of selected participants with unknown outcomes differs between models, differences in sensitivity and PPV partly reflect differences in the number of selected participants with known outcomes.",
+    "Pre-checkup score ≥40: PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup.",
+    OUTCOME_NOTE, time_note("18m"),
+    E12_NOTE_A
+  )) |>
+  sup_header("Top", "Selected as high risk") |>
+  (\(ft) { i <- match(E12_NOTE_A, ft$footer$dataset[[1]]); stopifnot(!is.na(i)); sup_footer(ft, i) })() |>
+  tf() |>
+  padding(padding.top = 1.5, padding.bottom = 1.5, part = "all") |>
+  paginate(group = "Population", group_def = "rle")
+save_tables(list(`eTable 10. Differences in sensitivity and PPV between models in the temporal validation cohort (outcome at ≈18 months)` = ft_e12),
+            "eTable10", landscape = TRUE, widths = c(0.65, 1.45, 0.7, rep(1.05, 6)))
+
+# =============================================================================
+# eTable 7. 性別ごとの主たる結果 (外部検証、約 1 年半後。08_by_sex.R)
 # =============================================================================
 # JAMA Network の投稿規定 (主なアウトカムを性別ごとに示す) に合わせた記述的な提示。
 # 抽出の閾値は男女合わせた全適格者で決め、感度と陽性的中率を性別ごとに集計する
@@ -1077,8 +1258,8 @@ ft_e8 <- flextable(e8_body) |>
     OUTCOME_NOTE, time_note("18m")
   )) |>
   fontsize(size = 7.5, part = "all") |> font(fontname = "Arial", part = "all")
-save_tables(list(`eTable 8. Performance of the checkup-based model by sex in the temporal validation cohort (≈18 months)` = ft_e8),
-            "eTable8", landscape = TRUE, widths = c(0.9, 0.6, 1.2, 1.05, 1.0, 1.1, 1.05, 1.05, 1.05))
+save_tables(list(`eTable 7. Performance of the checkup-based model by sex in the temporal validation cohort (≈18 months)` = ft_e8),
+            "eTable7", landscape = TRUE, widths = c(0.9, 0.6, 1.2, 1.05, 1.0, 1.1, 1.05, 1.05, 1.05))
 
 # =============================================================================
 # eTable 5. 外部検証での再較正 (09_recalibration.R)
@@ -1285,7 +1466,7 @@ save_efig2(".tiff", \(f) ragg::agg_tiff(f, width = efig2_w, height = efig2_h, un
                                         compression = "lzw", background = "white"))
 save_efig2(".pdf",  \(f) grDevices::cairo_pdf(f, width = efig2_w / 25.4, height = efig2_h / 25.4))
 message(sprintf("図: eFigure2 (%.0f x %.0f mm)", efig2_w, efig2_h))
-# ↑ 3 つを 1 枚にまとめた図 (8 pt) は、結果レポート (reports/client_report) 用。
+# ↑ 3 つを 1 枚にまとめた図 (8 pt) は、もとは結果レポート (2026-10-14 に削除) 用。投稿には使わない。
 # Supplement 用は、JAMA の規定 (図の中の文字は 10 pt) に合わせて 10 pt で作る。10 pt では 3 つが 1 ページに
 # 収まらない (縦でも横でも) ので、a–c を別のファイルにして 1 ページずつ貼る (eFigure2a/b/c)
 efig2p_g <- map(flow$diagrams, \(f) build_flow(f, fontsize = STYLE$efig_text, wrap_width = 60, gap = 0.8,
@@ -1383,34 +1564,32 @@ readr::write_excel_csv(e3 |> transmute(analysis, label, type,
 # =============================================================================
 # eFigure 4. 構成要素ごとの較正曲線 (E9、外部検証、健診ベースモデル)
 # =============================================================================
-# 換算前 (複合アウトカムの予測リスクをそのまま) を破線、Gondrie らの方法で換算した後を実線で重ねる
-EFIG4_ROWS <- c(low_hrqol = "(a) Poor HRQOL (<40), all participants\nwith a known composite outcome",
+# Gondrie らの方法で構成要素ごとのリスクに換算した後の曲線だけを描く (2026-10-17 変更)。
+# 換算前 (複合アウトカムの予測リスクをそのまま) は構造上必ず過大予測になり、図で示す情報が少ないので、
+# 換算前後の比較は eTable 11 の calibration-in-the-large・slope に任せる
+EFIG4_ROWS <- c(low_hrqol = "(a) Poor HRQOL (score <40)",
                 ltc3_death = "(b) Care-need level ≥3 or death")
-EFIG4_VERSIONS <- c(adapted = "Converted (component-specific risk)",
-                    unadjusted = "Unadjusted (risk of the composite outcome)")
 efig4_d <- perf_ext$comp_calib |>
-  filter(model == "checkup") |>
+  filter(model == "checkup", version == "adapted") |>
   mutate(col = factor(paste0("Model for the ", OUTCOME_LABELS[DOMAIN_OF(outcome)]),
                       levels = paste0("Model for the ", OUTCOME_LABELS)),
-         row = factor(EFIG4_ROWS[component], levels = EFIG4_ROWS),
-         version = factor(EFIG4_VERSIONS[version], levels = EFIG4_VERSIONS))
-efig4 <- ggplot(efig4_d, aes(p, observed, linetype = version)) +
+         row = factor(EFIG4_ROWS[component], levels = EFIG4_ROWS))
+efig4 <- ggplot(efig4_d, aes(p, observed)) +
   geom_abline(slope = 1, intercept = 0, colour = "grey60", linewidth = 0.3) +
   geom_line(colour = STYLE$model_colors[["checkup"]], linewidth = 0.7, na.rm = TRUE) +
   facet_grid(row ~ col) +
-  scale_linetype_manual(values = setNames(c("solid", "dashed"), EFIG4_VERSIONS)) +
   scale_x_continuous(labels = scales::percent) + scale_y_continuous(labels = scales::percent) +
   coord_cartesian(xlim = c(0, STYLE$calib_limit), ylim = c(0, STYLE$calib_limit)) +
-  labs(x = "Predicted risk", y = "Observed proportion") + theme_efig() +
+  labs(x = "Predicted risk converted to the component", y = "Observed proportion") + theme_efig() +
   theme(strip.text.y = element_text(size = STYLE$efig_text))
 save_efig(efig4, "eFigure4", height_mm = 160)
 k_lab <- c(low_hrqol = "poor HRQOL", ltc3_death = "care-need level ≥3 or death")
 writeLines(c(
   "eFigure 4. Calibration of the checkup-based model for each component of the composite outcome in the temporal validation cohort (≈18 months).",
-  "Outcomes at approximately 18 months after the checkup. Dashed lines use the predicted risk of the composite outcome as it is; solid lines use risks converted to component-specific risks by the method of Gondrie et al (eMethods 13): risk = $1 - (1 - p)^{k}$, where $p$ is the predicted risk of the composite outcome and $k$ is the incidence of the component divided by the incidence of the composite outcome in the development cohort.",
+  "Outcomes at approximately 18 months after the checkup. Predicted risks of the composite outcome are converted to component-specific risks by the method of Gondrie et al (eMethods 13): risk = $1 - (1 - p)^{k}$, where $p$ is the predicted risk of the composite outcome and $k$ is the incidence of the component divided by the incidence of the composite outcome in the development cohort. Calibration before and after conversion is shown in eTable 11.",
   paste0("Conversion factors: ", paste(sprintf("%s, %s: $k$ = %.2f", OUTCOME_LABELS[DOMAIN_OF(perf_ext$comp_k$outcome)],
                                                k_lab[perf_ext$comp_k$component], perf_ext$comp_k$k), collapse = "; "), "."),
-  "Both components are evaluated among all participants with a known composite outcome, because converted risks refer to all participants. For component (a), participants who reached care-need level ≥3 or died without an SF-8 score <40 are nonevents. $k$ was calculated with all participants with a known composite outcome in the development cohort as the denominator, counting each component whenever it occurred.",
+  "Both components are evaluated among all participants with a known composite outcome, because converted risks refer to all participants (unlike Figure 3, in which component (a) is evaluated only among participants alive without care-need level ≥3). For component (a), participants who reached care-need level ≥3 or died without an SF-8 score <40 are nonevents. $k$ was calculated with all participants with a known composite outcome in the development cohort as the denominator, counting each component whenever it occurred.",
   "The gray diagonal line indicates perfect calibration. Curves are loess-smoothed.",
   "PCS composite: PCS score <40, care-need level ≥3, or death; MCS composite: MCS score <40, care-need level ≥3, or death.",
   "HRQOL indicates health-related quality of life; MCS, mental component summary; PCS, physical component summary; SF-8, 8-item Short-Form Health Survey."
