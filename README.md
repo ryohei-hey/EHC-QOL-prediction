@@ -24,6 +24,7 @@ code/analysis/
   07_diagnostics.R            internal diagnostics
   08_by_sex.R                 results by sex
   09_recalibration.R          logistic recalibration in temporal validation
+  10_e10_pcs_mcs.R            added value of pre-checkup PCS and MCS, separately
   99_RENDER_outputs.R         all tables (Word) and figures (PNG/PDF)
   run_all.R                   runs the whole pipeline in order
   R/                          helper functions (data, models, metrics, bootstrap, flow diagram)
@@ -39,7 +40,7 @@ Run from the project root, with the data placed in `data/raw/` (not included):
 source("code/analysis/run_all.R", encoding = "UTF-8")
 ```
 
-`00_setup.R` checks that the working directory is the project root by looking for `protocol/protocol.md`; create this file (it can be empty) when running outside the original project folder. Outputs are written to `data/processed/`, `output/derived/`, `output/tables/`, and `output/figures/`. The full run takes about 2 hours on 20 cores; set `TEST_MODE <- TRUE` in `run_all.R` for a quick check with fewer bootstrap samples. The random seed is 20260921.
+`00_setup.R` checks that the working directory is the project root by looking for `protocol/protocol.md`; create this file (it can be empty) when running outside the original project folder. Outputs are written to `data/processed/`, `output/derived/`, `output/tables/`, and `output/figures/`. The full run takes about 3 hours on 20 cores (about 40 minutes of which is `10_e10_pcs_mcs.R`); set `TEST_MODE <- TRUE` in `run_all.R` for a quick check with fewer bootstrap samples. The random seed is 20260921.
 
 ## Software
 
