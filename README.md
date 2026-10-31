@@ -27,7 +27,7 @@ code/analysis/
   10_e10_pcs_mcs.R            added value of pre-checkup PCS and MCS, separately
   99_RENDER_outputs.R         all tables (Word) and figures (PNG/PDF)
   run_all.R                   runs the whole pipeline in order
-  R/                          helper functions (data, models, metrics, bootstrap, flow diagram)
+  R/                          helper functions (data, models, metrics, bootstrap, flow diagram, table layout)
 ```
 
 Code comments are written in Japanese.
