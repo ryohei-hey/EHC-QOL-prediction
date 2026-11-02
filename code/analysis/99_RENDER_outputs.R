@@ -922,6 +922,7 @@ ft_e5 <- flextable(e4dev) |>
   add_footer_lines(c(
     abbrev_note("MCS", "PCS", "PPV"),
     "Apparent performance: the final model was applied to the same development data on which it was fitted, so the values are expected to be optimistic. Performance in the temporal validation cohort is shown in Table 2.",
+    model_note("checkup"),
     "Sensitivity: proportion of participants with the outcome who were selected. PPV: proportion of selected participants who had the outcome. Both were calculated among participants with a known outcome. Outcome, %: proportion with the outcome among those with a known outcome (the PPV expected if participants were selected at random).",
     "Pre-checkup score ≥40: PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup.",
     OUTCOME_NOTE,
@@ -1014,6 +1015,7 @@ ft_s1_sel <- flextable(s1_sel) |>
     "Abbreviations: MCS, mental component summary; PCS, physical component summary; PPV, positive predictive value.",
     "Temporal validation cohort. Selection as high risk as in Table 2 (top 10%, 20%, or 30% of predicted risk among all eligible participants in the population); unweighted values are shown in Table 2.",
     "Sensitivity and PPV were weighted as in eTable 8A. 95% CIs: bootstrap percentile intervals from 1000 samples stratified by fiscal year.",
+    model_note("checkup"),
     "Pre-checkup score ≥40: PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup.",
     OUTCOME_NOTE
   ))
@@ -1264,7 +1266,7 @@ ft_e12 <- flextable(e12_body) |>
   add_footer_lines(c(
     abbrev_note("HRQOL", "MCS", "PCS", "PPV"),
     "Temporal validation cohort (exploratory analyses). Sensitivity and PPV of the checkup-based model are shown in Table 2. Δ: difference from the checkup-based model (model named above minus checkup-based model), in percentage points.",
-    model_note("direct", "checkup_direct"),
+    model_note("checkup", "direct", "checkup_direct"),
     sprintf("Sensitivity and PPV were calculated among participants with known outcomes. 95%% CIs: bootstrap percentile intervals from %d samples stratified by fiscal year (the same samples as in Table 2); in each sample, the selection threshold was recomputed for each model and the difference was calculated within the sample.", e4_delta$n_boot[1]),
     "Because the number of selected participants with unknown outcomes differs between models, differences in sensitivity and PPV partly reflect differences in the number of selected participants with known outcomes.",
     "Pre-checkup score ≥40: PCS score (PCS composite) or MCS score (MCS composite) of 40 or higher in the survey before the checkup.",
@@ -1317,6 +1319,7 @@ ft_e8 <- flextable(e8_body) |>
     "Abbreviations: AUC, area under the receiver operating characteristic curve; FY, fiscal year; MCS, mental component summary; PCS, physical component summary; PPV, positive predictive value.",
     "Differences between sexes were not tested.",
     "Checkup-based model (final model, coefficients fixed) applied to the temporal validation cohort (FY2022 and FY2023 checkups combined). AUC, DeLong 95% CI; calibration slope and calibration-in-the-large, Wald 95% CI.",
+    model_note("checkup"),
     "Sensitivity and PPV (first and second line in each cell): participants in the top 10%, 20%, or 30% of predicted risk among all eligible participants of both sexes were selected as high risk, as at the checkup; sensitivity and PPV were then calculated within each sex among participants with known outcomes. 95% CIs: bootstrap percentile (stratified by fiscal year; threshold recomputed in each sample).",
     OUTCOME_NOTE
   )) |>
