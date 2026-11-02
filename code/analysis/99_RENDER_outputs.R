@@ -108,7 +108,8 @@ save_fig <- function(p, name, height_mm, width_mm = STYLE$width_2col) {
          units = "mm", device = cairo_pdf)
   message("図: ", name)
 }
-# EMF (ベクター) を書き出す。Supplement (Word) にはこれを貼る。draw は描画する関数
+# EMF (ベクター) を書き出す。draw は描画する関数。Supplement (Word) には 600 dpi の PNG を貼る
+# (2026-11-02 変更。EMF は Google Drive のプレビューで表示されないため。EMF は Word で編集したいときのために残す)
 # 非 ASCII のパスで保存に失敗しないよう、一時ファイルに描いてからコピーする
 write_emf <- function(name, width_mm, height_mm, draw) {
   tmp <- tempfile(name, fileext = ".emf")
@@ -117,7 +118,7 @@ write_emf <- function(name, width_mm, height_mm, draw) {
   stopifnot(file.copy(tmp, file.path(DIR_FIGURES, paste0(name, ".emf")), overwrite = TRUE))
   unlink(tmp)
 }
-# eFigure: PNG と PDF (確認用・レポート用) に加えて EMF を書き出す
+# eFigure: PNG (Supplement に貼る) と PDF (確認用・レポート用) に加えて EMF を書き出す
 save_efig <- function(p, name, height_mm, width_mm = STYLE$efig_width) {
   save_fig(p, name, height_mm, width_mm)
   write_emf(name, width_mm, height_mm, \() print(p))
